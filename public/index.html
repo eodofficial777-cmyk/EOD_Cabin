@@ -247,6 +247,13 @@ code{background:var(--surface);padding:0 4px;border-radius:4px}
 .avpick #avUrl{flex:1;min-width:180px;min-height:36px}
 .seats li{flex-wrap:wrap}
 .emobtn{min-height:34px;padding:2px 12px;font-size:.85rem;margin-left:44px}
+.ctrlbar .btn{display:inline-flex;align-items:center;gap:6px;min-height:38px}
+.pending{font-size:.72rem;background:var(--monster);color:#fff;border-radius:999px;padding:0 6px;margin-left:4px}
+.reclaim{border:1px dashed var(--line);border-radius:10px;padding:8px 12px}
+.reclaim summary{cursor:pointer}
+.reclaim[open] summary{margin-bottom:8px}
+.pin{font-size:1.1rem;letter-spacing:.2em;font-family:ui-monospace,monospace}
+.tinybtn{min-height:28px;padding:0 10px;font-size:.8rem}
 </style>
 </head>
 <body>
@@ -315,13 +322,16 @@ const Local = {
   async leave(){ this.game = null; Object.assign(app, { code:null, meta:null, seats:{}, presence:{}, pub:null, view:null, ic:[], ooc:[], wolf:[], spec:[], spectators:{}, avatars:{}, emotes:{} }); render(); },
   toggleReady(){}, 
   setPreset(k){ app.meta.preset = k; this.sync(); },
+  setAllowAlts(v){ app.meta.allowAlts = !!v; this.sync(); },
+  toggleAlt(id){ const s = app.seats[id]; if (s) s.alt = !s.alt; this.sync(); },
   setAvatar(id, obj){ if (hasAv(obj)) app.avatars[id] = obj; else delete app.avatars[id]; render(); },
   setEmotes(id, obj){ if (hasAv(obj)) app.emotes[id] = obj; else delete app.emotes[id]; render(); },
   setMode(m){ app.meta.mode = m; this.sync(); },
   switchSeat(id){ app.uid = id; ui.lightMode = false; this.sync(); },
   send(action){
     if (action.type === 'start' || action.type === 'again'){
-      const seats = Object.entries(app.seats).sort((a, b) => a[1].joinedAt - b[1].joinedAt).map(([id, v]) => ({ id, name:v.name }));
+      const seats = Object.entries(app.seats).sort((a, b) => a[1].joinedAt - b[1].joinedAt).map(([id, v]) => ({ id, name:v.name, alt: !!v.alt }));
+      if (app.meta.mode !== 'coop' && seats.filter(x => !x.alt).length < RULES.mainNeeded(seats.length)){ ui.toast = `有身份模式至少要 ${RULES.mainNeeded(seats.length)} 位主角色`; render(); return; }
       const minP = RULES.minPlayersFor(app.meta.mode);
       if (seats.length < minP){ ui.toast = `這個模式至少要 ${minP} 人`; render(); return; }
       this.game = L.createGame({ seats, seed:Math.floor(Math.random() * 2147483647), speed:app.meta.preset, mode:app.meta.mode, now:Date.now() });
@@ -368,7 +378,7 @@ const Local = {
 // 線上模式：Firebase
 // =========================================================
 const Online = {
-  fb:null, subs:[], wolfUnsub:null, specUnsub:null,
+  fb:null, subs:[], wolfUnsub:null, specUnsub:null, viewUnsub:null,
   async init(config){
     const [appMod, authMod, dbMod] = await Promise.all([
       import(`https://www.gstatic.com/firebasejs/${FB_VER}/firebase-app.js`),
@@ -382,7 +392,7 @@ const Online = {
     onValue(ref(this.fb.db, '.info/serverTimeOffset'), s => { app.offset = s.val() || 0; });
     authMod.onAuthStateChanged(auth, user => {
       if (!user) return;
-      app.uid = user.uid; app.ready = true;
+      app.uid = user.uid; app.authUid = user.uid; app.ready = true;
       this.autoJoin(); render();
     });
     authMod.signInAnonymously(auth).catch(e => { ui.homeErr = '登入失敗：' + e.message; app.ready = true; render(); });
@@ -393,7 +403,7 @@ const Online = {
     for (let i = 0; i < 6; i++){
       const code = genCode();
       try {
-        await set(this.r(`rooms/${code}/meta`), { host:app.uid, status:'lobby', preset:'standard', mode:'roles', createdAt:serverTimestamp() });
+        await set(this.r(`rooms/${code}/meta`), { host:app.authUid, status:'lobby', preset:'standard', mode:'roles', createdAt:serverTimestamp() });
         await this.join(code, name);
         return;
       } catch (e) { /* 代碼撞到了 */ }
@@ -407,21 +417,38 @@ const Online = {
     if (!name) throw '請輸入名字';
     const metaSnap = await get(this.r(`rooms/${code}/meta`));
     if (!metaSnap.exists()) throw '找不到這個房間';
-    const seat = await get(this.r(`rooms/${code}/seats/${app.uid}`));
+    const seat = await get(this.r(`rooms/${code}/seats/${app.authUid}`));
     if (seat.exists()){ this.enter(code); return; }   // 已經是玩家了
     const specs = (await get(this.r(`rooms/${code}/spectators`))).val() || {};
-    if (!specs[app.uid] && Object.keys(specs).length >= MAX_SPECTATORS) throw '觀眾席已經滿了';
-    await set(this.r(`rooms/${code}/spectators/${app.uid}`), { name, joinedAt:serverTimestamp() });
+    if (!specs[app.authUid] && Object.keys(specs).length >= MAX_SPECTATORS) throw '觀眾席已經滿了';
+    await set(this.r(`rooms/${code}/spectators/${app.authUid}`), { name, joinedAt:serverTimestamp() });
     this.enter(code);
+  },
+  // 換裝置：用角色名字＋重新登入碼把座位接到這個瀏覽器
+  reclaim(code, name, pin){
+    const { push, onValue, remove, serverTimestamp } = this.fb;
+    code = String(code || '').toUpperCase().trim();
+    if (!code) return Promise.reject('請輸入房間代碼');
+    if (!name) return Promise.reject('請輸入角色名字');
+    if (!pin) return Promise.reject('請輸入重新登入碼');
+    return new Promise((resolve, reject) => {
+      const offs = [];
+      const done = fn => { offs.forEach(o => o()); clearTimeout(timer); fn(); };
+      const timer = setTimeout(() => done(() => reject('伺服器沒有回應，請再試一次')), 20000);
+      offs.push(onValue(this.r(`rooms/${code}/errors/${app.authUid}`), s => { const v = s.val(); if (v){ remove(s.ref); done(() => reject(v.msg)); } }, () => {}));
+      offs.push(onValue(this.r(`rooms/${code}/seats/${app.authUid}`), s => { if (s.exists()) done(() => { this.enter(code); resolve(); }); }, () => {}));
+      push(this.r(`rooms/${code}/reclaims`), { uid:app.authUid, name, pin:String(pin).trim().toUpperCase(), ts:serverTimestamp() })
+        .catch(() => done(() => reject('送不出去，請確認房間代碼')));
+    });
   },
   async takeSeat(){
     const { get, set, remove, serverTimestamp } = this.fb;
     const seats = (await get(this.r(`rooms/${app.code}/seats`))).val() || {};
     if (Object.keys(seats).length >= RULES.maxPlayers){ ui.toast = '玩家已經滿了'; render(); return; }
-    const name = app.spectators[app.uid] ? app.spectators[app.uid].name : '玩家';
+    const name = app.spectators[app.authUid] ? app.spectators[app.authUid].name : '玩家';
     try {
-      await set(this.r(`rooms/${app.code}/seats/${app.uid}`), { name, ready:false, joinedAt:serverTimestamp() });
-      await remove(this.r(`rooms/${app.code}/spectators/${app.uid}`));
+      await set(this.r(`rooms/${app.code}/seats/${app.authUid}`), { name, ready:false, joinedAt:serverTimestamp() });
+      await remove(this.r(`rooms/${app.code}/spectators/${app.authUid}`));
     } catch { ui.toast = '遊戲已經開始，只能繼續觀戰'; render(); }
   },
   async join(code, name){
@@ -431,13 +458,13 @@ const Online = {
     const metaSnap = await get(this.r(`rooms/${code}/meta`));
     if (!metaSnap.exists()) throw '找不到這個房間';
     const meta = metaSnap.val();
-    const seatSnap = await get(this.r(`rooms/${code}/seats/${app.uid}`));
+    const seatSnap = await get(this.r(`rooms/${code}/seats/${app.authUid}`));
     if (!seatSnap.exists()){
       if (meta.status !== 'lobby') throw '這個房間的遊戲已經開始了，可以按「觀戰」進去看';
       if (!name) throw '請輸入角色名字';
       const seats = (await get(this.r(`rooms/${code}/seats`))).val() || {};
       if (Object.keys(seats).length >= RULES.maxPlayers) throw '玩家已經滿了，可以按「觀戰」進去看';
-      await set(this.r(`rooms/${code}/seats/${app.uid}`), { name, ready:false, joinedAt:serverTimestamp() });
+      await set(this.r(`rooms/${code}/seats/${app.authUid}`), { name, ready:false, joinedAt:serverTimestamp() });
     }
     this.enter(code);
   },
@@ -446,8 +473,8 @@ const Online = {
     if (!code || app.code) return;
     try {
       const C = code.toUpperCase();
-      const s = await this.fb.get(this.r(`rooms/${C}/seats/${app.uid}`));
-      const sp = await this.fb.get(this.r(`rooms/${C}/spectators/${app.uid}`));
+      const s = await this.fb.get(this.r(`rooms/${C}/seats/${app.authUid}`));
+      const sp = await this.fb.get(this.r(`rooms/${C}/spectators/${app.authUid}`));
       if (s.exists() || sp.exists()) this.enter(C);
     } catch {}
   },
@@ -460,23 +487,49 @@ const Online = {
     history.replaceState(null, '', `?room=${code}`);
     const sub = (path, cb) => { this.subs.push(onValue(this.r(path), cb, e => console.warn(path, e.message))); };
     sub(`rooms/${code}/meta`, s => { app.meta = s.val(); render(); });
-    sub(`rooms/${code}/seats`, s => { app.seats = s.val() || {}; render(); });
+    sub(`rooms/${code}/seats`, s => {
+      app.seats = s.val() || {};
+      if (app.seats[app.authUid]) ui.hadSeat = true;
+      else if (ui.hadSeat && app.meta && app.meta.status !== 'lobby'){
+        // 這個角色在別的裝置用登入碼接走了
+        ui.hadSeat = false;
+        this.unsubAll();
+        history.replaceState(null, '', location.pathname);
+        ui.homeErr = '你的角色已經在其他裝置用重新登入碼接走了。';
+      }
+      render();
+    });
     sub(`rooms/${code}/presence`, s => { app.presence = s.val() || {}; render(); });
     sub(`rooms/${code}/spectators`, s => { app.spectators = s.val() || {}; this.specSub(); render(); });
     sub(`rooms/${code}/avatars`, s => { app.avatars = s.val() || {}; render(); });
-    if (hasAv(myAvatars())) set(this.r(`rooms/${code}/avatars/${app.uid}`), myAvatars()).catch(() => {});
+    if (hasAv(myAvatars())) set(this.r(`rooms/${code}/avatars/${app.authUid}`), myAvatars()).catch(() => {});
     sub(`rooms/${code}/emotes`, s => { app.emotes = s.val() || {}; render(); });
-    if (hasAv(myEmotes())) set(this.r(`rooms/${code}/emotes/${app.uid}`), myEmotes()).catch(() => {});
+    if (hasAv(myEmotes())) set(this.r(`rooms/${code}/emotes/${app.authUid}`), myEmotes()).catch(() => {});
     sub(`rooms/${code}/chat/ic`, s => { app.ic = listOf(s); render(); });
     sub(`rooms/${code}/chat/ooc`, s => { app.ooc = listOf(s); render(); });
-    sub(`rooms/${code}/errors/${app.uid}`, s => { const v = s.val(); if (!v) return; ui.toast = v.msg; clearBusy(); remove(s.ref); render(); });
+    sub(`rooms/${code}/errors/${app.authUid}`, s => { const v = s.val(); if (!v) return; ui.toast = v.msg; clearBusy(); remove(s.ref); render(); });
     sub(`game/${code}/core/public`, s => { app.pub = s.val() ? JSON.parse(s.val()) : null; buildView(); onPub(); clearBusy(); this.specSub(); this.wolfSub(); render(); });
-    sub(`game/${code}/core/views/${app.uid}`, s => { app.me = s.val() ? JSON.parse(s.val()).me : null; buildView(); onView(); this.wolfSub(); render(); });
+    app.uid = app.authUid;
+    this.viewSub();
     sub(`game/${code}/log`, s => { app.log = listOf(s); render(); });
-    const pres = this.r(`rooms/${code}/presence/${app.uid}`);
+    const pres = this.r(`rooms/${code}/presence/${app.authUid}`);
     set(pres, true); onDisconnect(pres).remove();
     render();
   },
+  // 私人畫面：跟著「目前操作的角色」（主角或副角色）訂閱
+  viewSub(){
+    if (this.viewUnsub){ this.viewUnsub(); this.viewUnsub = null; }
+    app.me = null; buildView();
+    this.viewUnsub = this.fb.onValue(this.r(`game/${app.code}/core/views/${app.uid}`), s => { const v = s.val() ? JSON.parse(s.val()) : null; app.me = v ? v.me : null; app.pin = v ? v.pin : null; buildView(); onView(); this.wolfSub(); render(); }, () => {});
+  },
+  switchSeat(id){ if (id !== app.authUid && id !== app.authUid + '_alt') return; app.uid = id; ui.lightMode = false; this.viewSub(); render(); },
+  async addAlt(name){
+    const { set, serverTimestamp } = this.fb;
+    try { await set(this.r(`rooms/${app.code}/seats/${app.authUid}_alt`), { name, ready:true, joinedAt:serverTimestamp(), owner:app.authUid }); }
+    catch { ui.toast = '沒辦法新增副角色（房主沒開放，或遊戲已經開始）'; render(); }
+  },
+  async removeAlt(){ await this.fb.remove(this.r(`rooms/${app.code}/seats/${app.authUid}_alt`)).catch(() => {}); },
+  setAllowAlts(v){ this.fb.set(this.r(`rooms/${app.code}/meta/allowAlts`), !!v).catch(() => { ui.toast = '只有房主能改設定'; render(); }); },
   wolfSub(){
     const v = app.view;
     const can = (v && v.me && ['monster','fallen'].includes(v.me.role)) || (app.pub && app.pub.phase === 'over');
@@ -493,34 +546,38 @@ const Online = {
     this.subs.forEach(u => u()); this.subs = [];
     if (this.wolfUnsub){ this.wolfUnsub(); this.wolfUnsub = null; }
     if (this.specUnsub){ this.specUnsub(); this.specUnsub = null; }
+    if (this.viewUnsub){ this.viewUnsub(); this.viewUnsub = null; }
     Object.assign(app, { code:null, meta:null, seats:{}, spectators:{}, presence:{}, pub:null, view:null, me:null, log:[], ic:[], ooc:[], wolf:[], spec:[], avatars:{}, emotes:{} });
   },
   async leave(){
     const { remove } = this.fb, code = app.code;
     if (code){
-      if (app.meta && app.meta.status === 'lobby') await remove(this.r(`rooms/${code}/seats/${app.uid}`)).catch(() => {});
-      if (app.spectators[app.uid]) await remove(this.r(`rooms/${code}/spectators/${app.uid}`)).catch(() => {});
-      await remove(this.r(`rooms/${code}/presence/${app.uid}`)).catch(() => {});
+      if (app.meta && app.meta.status === 'lobby'){
+        await remove(this.r(`rooms/${code}/seats/${app.authUid}_alt`)).catch(() => {});
+        await remove(this.r(`rooms/${code}/seats/${app.authUid}`)).catch(() => {});
+      }
+      if (app.spectators[app.authUid]) await remove(this.r(`rooms/${code}/spectators/${app.authUid}`)).catch(() => {});
+      await remove(this.r(`rooms/${code}/presence/${app.authUid}`)).catch(() => {});
     }
     this.unsubAll();
     history.replaceState(null, '', location.pathname);
     render();
   },
   setAvatar(id, obj){
-    const ref = this.r(`rooms/${app.code}/avatars/${app.uid}`);
+    const ref = this.r(`rooms/${app.code}/avatars/${id}`);
     (hasAv(obj) ? this.fb.set(ref, obj) : this.fb.remove(ref)).catch(() => { ui.toast = '頭像沒有存成功，圖片可能太大'; render(); });
   },
   setEmotes(id, obj){
-    const ref = this.r(`rooms/${app.code}/emotes/${app.uid}`);
+    const ref = this.r(`rooms/${app.code}/emotes/${id}`);
     (hasAv(obj) ? this.fb.set(ref, obj) : this.fb.remove(ref)).catch(() => { ui.toast = '表符代碼沒有存成功'; render(); });
   },
-  toggleReady(){ const me = app.seats[app.uid]; this.fb.set(this.r(`rooms/${app.code}/seats/${app.uid}/ready`), !(me && me.ready)); },
+  toggleReady(){ const me = app.seats[app.authUid]; this.fb.set(this.r(`rooms/${app.code}/seats/${app.authUid}/ready`), !(me && me.ready)); },
   setPreset(k){ this.fb.set(this.r(`rooms/${app.code}/meta/preset`), k).catch(() => { ui.toast = '只有房主能改設定'; render(); }); },
   setMode(m){ this.fb.set(this.r(`rooms/${app.code}/meta/mode`), m).catch(() => { ui.toast = '只有房主能改設定'; render(); }); },
   send(action){
     if (!app.code) return;
     const { push, serverTimestamp } = this.fb;
-    push(this.r(`rooms/${app.code}/intents`), { uid:app.uid, action, ts:serverTimestamp() })
+    push(this.r(`rooms/${app.code}/intents`), { uid:app.authUid, as:app.uid, action, ts:serverTimestamp() })
       .catch(e => { if (action.type !== 'timeout'){ ui.toast = '送出失敗：' + e.message; clearBusy(); render(); } });
   },
   async chat(ch, text){
@@ -688,7 +745,7 @@ function emoteFor(id, stage){
 function saveEmotes(forId, obj){
   const clean = {};
   STAGES.forEach(([k]) => { const v = String(obj[k] || '').replace(/\s+/g, ' ').trim().slice(0, 200); if (v) clean[k] = v; });
-  const mine = !app.code || forId === app.uid;
+  const mine = !app.code || forId === selfId();
   if (mine) storeSet('lamp:emotes', JSON.stringify(clean));
   if (app.code) B.setEmotes(forId, clean);
 }
@@ -710,7 +767,7 @@ function emoteHtml(){
 }
 
 function applyAvatar(forId, slot, val){
-  const mine = !app.code || forId === app.uid;
+  const mine = !app.code || forId === selfId();
   const cur = { ...normAv(mine && !app.code ? myAvatars() : app.avatars[forId]) };
   if (val) cur[slot] = val; else delete cur[slot];
   if (mine) storeSet('lamp:avatars', JSON.stringify(cur));
@@ -740,7 +797,11 @@ function cellLabel(pub, k){
   const [x, y] = k.split(',').map(Number);
   return `未探索的光（${x},${-y}）`;
 }
-const isHost = () => app.meta && app.meta.host === app.uid;
+const isHost = () => app.meta && app.meta.host === (app.authUid || app.uid);
+const selfId = () => app.authUid || app.uid;                     // 線上：登入的帳號；測試模式：目前視角
+const isMine = id => app.mode === 'online' && (id === app.authUid || id === app.authUid + '_alt');
+const ownerOf = id => (app.seats[id] && app.seats[id].owner) || id;
+const myAlt = () => app.mode === 'online' && app.seats[app.authUid + '_alt'] ? app.authUid + '_alt' : null;
 const meRole = () => app.view && app.view.me ? app.view.me.role : null;
 const isMonsterSide = r => r === 'monster' || r === 'fallen';
 
@@ -786,6 +847,11 @@ function homeView(){
       <button class="btn quiet" data-act="spectate">觀戰</button>
     </div>
     <p class="muted small">觀戰不佔玩家名額，遊戲開始後也能進去看；觀眾只看得到公開資訊。</p>
+    <details class="reclaim" ${ui.reclaimOpen ? 'open' : ''}><summary>換了裝置？用重新登入碼回到我的角色</summary>
+      <p class="muted small">在上面填好<strong>房間代碼</strong>和<strong>角色名字</strong>（要跟遊戲裡一模一樣），再輸入原本裝置上看到的 6 碼重新登入碼。有副角色的話，用主角色的名字登入，副角色會一起回來。</p>
+      <div class="row"><div class="field"><label for="pinInput">重新登入碼</label><input id="pinInput" maxlength="6" autocapitalize="characters" placeholder="例如 PQB7DQ"></div>
+      <button class="btn" data-act="reclaim">回到我的角色</button></div>
+    </details>
     <p class="muted small">或是自己開一間：</p>`}
     <div><button class="btn primary" data-act="create">建立房間</button></div>
     ${ui.homeErr ? `<p class="toast" role="alert">${esc(ui.homeErr)}</p>` : ''}
@@ -796,11 +862,13 @@ function lobbyView(){
   const ids = seatOrder();
   const host = isHost();
   const local = app.mode === 'local';
-  const others = ids.filter(id => id !== app.meta.host);
+  const others = ids.filter(id => id !== app.meta.host && !(app.seats[id] && app.seats[id].owner));
   const allReady = local || others.every(id => app.seats[id] && app.seats[id].ready);
+  const mains = ids.filter(id => !(app.seats[id] && (app.seats[id].owner || app.seats[id].alt))).length;
+  const needMain = (app.meta.mode || 'roles') === 'roles' ? RULES.mainNeeded(ids.length) : 0;
   const minP = RULES.minPlayersFor(app.meta.mode || 'roles');
-  const canStart = host && ids.length >= minP && ids.length <= RULES.maxPlayers && allReady;
-  const me = app.seats[app.uid];
+  const canStart = host && ids.length >= minP && ids.length <= RULES.maxPlayers && allReady && mains >= needMain;
+  const me = app.seats[selfId()];
   const preset = app.meta.preset || 'standard', sp = SPEEDS[preset];
   const mode = app.meta.mode || 'roles';
   const link = `${location.origin}${location.pathname}?room=${app.code}`;
@@ -815,13 +883,18 @@ function lobbyView(){
       <h2>玩家（${ids.length} / ${RULES.maxPlayers}）</h2>
       <ul class="seats">${ids.map(id => {
         const s = app.seats[id] || {};
-        const on = app.presence[id];
-        const tag = id === app.meta.host ? '房主' : (local || s.ready ? '準備好了' : '還沒準備');
-        return `<li>${tok(id, 'big')}<span class="name">${esc(s.name || '?')}${id === app.uid && !local ? '（你）' : ''}</span>
-          <span class="chip ${id === app.meta.host || s.ready || local ? 'good' : ''}">${tag}</span>
+        const on = app.presence[ownerOf(id)];
+        const isAlt = !!(s.owner || s.alt);
+        const tag = isAlt ? `${esc(nameOf(s.owner || app.meta.host))} 的副角色` : id === app.meta.host ? '房主' : (local || s.ready ? '準備好了' : '還沒準備');
+        return `<li>${tok(id, 'big')}<span class="name">${esc(s.name || '?')}${isMine(id) ? '（你）' : ''}</span>
+          <span class="chip ${isAlt || id === app.meta.host || s.ready || local ? 'good' : ''}">${tag}</span>
+          ${local && id !== app.meta.host ? `<button class="btn quiet" data-act="toggleAltLocal" data-id="${id}">${isAlt ? '改回主角色' : '設為副角色'}</button>` : ''}
+          ${isMine(id) && isAlt ? `<button class="btn quiet" data-act="removeAlt">移除副角色</button>` : ''}
           ${local && id !== app.meta.host ? `<button class="btn quiet" data-act="rmSeat" data-id="${id}">移除</button>` : `<span class="dot ${on ? 'on' : ''}" title="${on ? '在線上' : '離線'}"></span>`}
-          ${local || id === app.uid ? avatarPicker(id, true) + `<button class="btn quiet emobtn" data-act="emoOpen" data-for="${id}">噗浪表符${hasAv(app.emotes[id]) ? '（已設定）' : ''}</button>` : ''}</li>`;
+          ${local || isMine(id) ? avatarPicker(id, true) + `<button class="btn quiet emobtn" data-act="emoOpen" data-for="${id}">噗浪表符${hasAv(app.emotes[id]) ? '（已設定）' : ''}</button>` : ''}</li>`;
       }).join('')}</ul>
+      ${altSection(ids, host, local)}
+      ${mains < needMain ? `<p class="toast small">有身份模式至少要 ${needMain} 位主角色（副角色不算），現在只有 ${mains} 位。</p>` : ''}
       ${local ? `<div class="row">
         <div class="field"><label for="seatName">新增玩家</label><input id="seatName" maxlength="12" placeholder="玩家名字"></div>
         <button class="btn" data-act="addSeat">加入</button>
@@ -866,6 +939,20 @@ function lobbyView(){
   </main>${ui.emoting ? modal(emoteHtml(), 'guide') : ui.guide ? modal(guideHtml(ui.guide), 'guide') : ''}`;
 }
 
+// 一人多角：房主可以開放每位玩家多帶一個副角色（固定是普通人）
+function altSection(ids, host, local){
+  const allow = !!app.meta.allowAlts;
+  const parts = [];
+  if (host) parts.push(`<label class="small autoopt"><input type="checkbox" id="allowAlts" ${allow ? 'checked' : ''}> 允許玩家帶副角色（副角色固定是普通人，不會抽到怪物或巫師）</label>`);
+  else if (allow) parts.push('<p class="small">房主開放了副角色：每位玩家可以多帶一個角色，副角色固定是普通人。</p>');
+  if (!local && allow && app.seats[app.authUid] && !myAlt()){
+    parts.push(`<div class="row"><div class="field"><label for="altName">副角色名字</label><input id="altName" maxlength="12" placeholder="最多 12 個字"></div>
+      <button class="btn" data-act="addAlt" ${ids.length >= RULES.maxPlayers ? 'disabled' : ''}>新增副角色</button></div>`);
+  }
+  if (local) parts.push('<p class="muted small">測試模式：可以把任何座位設為副角色，看看身份分配。</p>');
+  return parts.join('');
+}
+
 function specList(){
   const ids = Object.keys(app.spectators || {}).filter(id => id !== SPEC_ID);
   if (!ids.length) return '';
@@ -880,6 +967,7 @@ function gameView(){
       <select id="viewAs">${pub.seats.map(p => `<option value="${p.id}" ${p.id === app.uid ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}<option value="${SPEC_ID}" ${app.uid === SPEC_ID ? 'selected' : ''}>觀眾視角</option></select>
       ${pub.phase === 'day' && L.cur(pub) !== app.uid ? `<button class="btn quiet" data-act="viewCur">切到行動中的人</button>` : ''}
       ${pendingSeats(pub).length ? `<span class="small">還沒行動：</span>${pendingSeats(pub).map(id => `<button class="btn quiet" data-act="viewAs" data-id="${id}">${esc(nameOf(id))}</button>`).join('')}` : ''}</div>` : ''}
+    ${controlBar(pub)}
     <header class="top">
       <h1>荒中小屋</h1>
       <button class="btn quiet guidebtn" data-act="guide" data-s="ops">指南</button>
@@ -895,6 +983,17 @@ function gameView(){
       <section class="panel chat">${chatView(pub)}</section>
     </div>
   </main>${overlayView(pub)}`;
+}
+
+// 有副角色的玩家：切換目前操作的角色，並提醒另一個角色需要行動
+function controlBar(pub){
+  const alt = myAlt();
+  if (!alt || !pub.seats.some(p => p.id === alt)) return '';
+  const mine = [app.authUid, alt];
+  const waiting = new Set(pendingSeats(pub));
+  if (pub.phase === 'day') waiting.add(L.cur(pub));
+  const btn = id => `<button class="btn ${id === app.uid ? 'primary' : 'quiet'}" data-act="controlAs" data-id="${id}">${tok(id)} ${esc(nameOf(id))}${id !== app.uid && waiting.has(id) ? '<span class="pending">要行動了</span>' : ''}</button>`;
+  return `<div class="viewbar ctrlbar"><span class="small">操作角色：</span>${mine.map(btn).join('')}</div>`;
 }
 
 // 測試模式用：雷雨和決戰中還沒選行動的人
@@ -1227,6 +1326,10 @@ function myBlock(pub){
   if (me.role === 'monster') rows.push(['燭台', `沒有（點的是假燈${me.fakes && me.fakes.length ? `，目前 ${me.fakes.length} 盞，下次雷雨會熄滅` : ''}）`]);
   else rows.push(['燭台', me.candle ? '<span class="good">🕯️ 有，火光穩定</span>' : '<span class="bad">沒有（點燈要靠火柴，或去搜索找新的）</span>']);
   rows.push(['火柴', st.matches ? `${st.matches} 根` : '沒有']);
+  if (app.mode === 'online' && app.pin){
+    rows.push(['重新登入碼', ui.showPin ? `<strong class="pin">${esc(app.pin)}</strong> <button class="btn quiet tinybtn" data-act="togglePin">藏起來</button><br><span class="muted small">換裝置時在首頁輸入，回到這個角色。不要給別人看。</span>`
+      : `<button class="btn quiet tinybtn" data-act="togglePin">顯示</button> <span class="muted small">換裝置時用</span>`]);
+  }
   rows.push(['外貌', { m:'怪物化', h:'半怪物化', o:'原形' }[stageOf(app.uid)] + `<span class="muted small">（恢復等級 ${pub.recovery}）</span>`]);
   rows.push(['生命', `${S.hp} / ${S.maxHp}`]);
   rows.push(['理智', `${S.san} / ${S.maxSan}`]);
@@ -1516,6 +1619,24 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'takeSeat': Online.takeSeat(); break;
+    case 'togglePin': ui.showPin = !ui.showPin; render(); break;
+    case 'reclaim': {
+      const name = document.getElementById('myName').value.trim();
+      ui.homeErr = ''; ui.reclaimOpen = true;
+      b.disabled = true; b.textContent = '驗證中……';
+      try { await Online.reclaim(document.getElementById('joinCode').value, name, document.getElementById('pinInput').value); storeSet('lamp:name', name); }
+      catch (err) { ui.homeErr = typeof err === 'string' ? err : '驗證失敗，請再試一次'; render(); }
+      break;
+    }
+    case 'addAlt': {
+      const nm = document.getElementById('altName').value.trim();
+      if (!nm){ ui.toast = '請輸入副角色名字'; render(); break; }
+      if (Object.values(app.seats).some(x => x.name === nm)){ ui.toast = '這個名字已經有人用了'; render(); break; }
+      Online.addAlt(nm); break;
+    }
+    case 'removeAlt': Online.removeAlt(); break;
+    case 'controlAs': Online.switchSeat(d.id); break;
+    case 'toggleAltLocal': Local.toggleAlt(d.id); break;
     case 'create':
     case 'join': {
       const name = document.getElementById('myName').value.trim();
@@ -1602,6 +1723,7 @@ $app.addEventListener('change', e => {
     const slot = e.target.dataset.slot || 'o';
     makeAvatar(e.target.files[0]).then(v => applyAvatar(forId || app.uid, slot, v)).catch(err => { ui.toast = typeof err === 'string' ? err : '讀不了這張圖片'; ui.homeErr = ui.toast; render(); });
   }
+  if (e.target.id === 'allowAlts') B.setAllowAlts(e.target.checked);
   if (e.target.id === 'exEmote'){ ui.exportEmote = e.target.checked; render(); }
   if (e.target.id === 'guideAuto') storeSet('lamp:guideAuto', e.target.checked ? 'off' : 'on');
 });

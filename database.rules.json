@@ -12,12 +12,16 @@
           "mode": {
             ".write": "auth != null && data.parent().child('host').val() === auth.uid && data.parent().child('status').val() === 'lobby'",
             ".validate": "newData.isString() && newData.val().matches(/^(roles|coop)$/)"
+          },
+          "allowAlts": {
+            ".write": "auth != null && data.parent().child('host').val() === auth.uid && data.parent().child('status').val() === 'lobby'",
+            ".validate": "newData.isBoolean()"
           }
         },
         "seats": {
           ".read": "auth != null",
           "$uid": {
-            ".write": "auth != null && auth.uid === $uid && root.child('rooms').child($code).child('meta/status').val() === 'lobby'",
+            ".write": "auth != null && ($uid === auth.uid || ($uid === auth.uid + '_alt' && root.child('rooms').child($code).child('meta/allowAlts').val() === true && root.child('rooms').child($code).child('seats').child(auth.uid).exists())) && root.child('rooms').child($code).child('meta/status').val() === 'lobby'",
             "name": {
               ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 12"
             },
@@ -29,6 +33,9 @@
             },
             "$other": {
               ".validate": false
+            },
+            "owner": {
+              ".validate": "newData.isString() && newData.val() === auth.uid && $uid === auth.uid + '_alt'"
             }
           }
         },
@@ -55,7 +62,7 @@
           "$ch": {
             ".read": "auth != null && ($ch === 'ic' || $ch === 'ooc' || ($ch === 'spec' && (root.child('rooms').child($code).child('spectators').child(auth.uid).exists() || root.child('game').child($code).child('core').child('phase').val() === 'over')))",
             "$id": {
-              ".write": "auth != null && !data.exists() && newData.child('uid').val() === auth.uid && ((($ch === 'ic' || $ch === 'ooc') && root.child('rooms').child($code).child('seats').child(auth.uid).exists() && root.child('game').child($code).child('core').child('phase').val() !== 'storm' && root.child('game').child($code).child('core').child('phase').val() !== 'reveal') || ($ch === 'spec' && root.child('rooms').child($code).child('spectators').child(auth.uid).exists()))",
+              ".write": "auth != null && !data.exists() && (newData.child('uid').val() === auth.uid || newData.child('uid').val() === auth.uid + '_alt') && ((($ch === 'ic' || $ch === 'ooc') && root.child('rooms').child($code).child('seats').child(newData.child('uid').val()).exists() && root.child('game').child($code).child('core').child('phase').val() !== 'storm' && root.child('game').child($code).child('core').child('phase').val() !== 'reveal') || ($ch === 'spec' && root.child('rooms').child($code).child('spectators').child(auth.uid).exists()))",
               ".validate": "newData.hasChildren(['uid', 'text', 'ts']) && newData.child('text').isString() && newData.child('text').val().length >= 1 && newData.child('text').val().length <= 200 && newData.child('ts').val() === now"
             }
           }
@@ -88,7 +95,7 @@
         "avatars": {
           ".read": "auth != null",
           "$uid": {
-            ".write": "auth != null && auth.uid === $uid",
+            ".write": "auth != null && ($uid === auth.uid || $uid === auth.uid + '_alt')",
             ".validate": "newData.hasChildren()",
             "m": {
               ".validate": "newData.isString() && newData.val().length < 60000 && (newData.val().beginsWith('data:image/webp') || newData.val().beginsWith('data:image/jpeg') || newData.val().beginsWith('data:image/png') || newData.val().beginsWith('https://'))"
@@ -107,7 +114,7 @@
         "emotes": {
           ".read": "auth != null",
           "$uid": {
-            ".write": "auth != null && auth.uid === $uid",
+            ".write": "auth != null && ($uid === auth.uid || $uid === auth.uid + '_alt')",
             ".validate": "newData.hasChildren()",
             "m": {
               ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 200"
@@ -121,6 +128,12 @@
             "$other": {
               ".validate": false
             }
+          }
+        },
+        "reclaims": {
+          "$id": {
+            ".write": "auth != null && !data.exists() && newData.child('uid').val() === auth.uid",
+            ".validate": "newData.hasChildren(['uid','name','pin']) && newData.child('name').isString() && newData.child('name').val().length <= 12 && newData.child('pin').isString() && newData.child('pin').val().length <= 10"
           }
         }
       }
@@ -139,7 +152,7 @@
           },
           "views": {
             "$uid": {
-              ".read": "auth != null && auth.uid === $uid"
+              ".read": "auth != null && ($uid === auth.uid || $uid === auth.uid + '_alt')"
             }
           }
         },

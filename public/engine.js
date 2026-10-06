@@ -39,7 +39,9 @@ const RULES = {
   whisperCooldown: 2,
   chatMax: 200,
   plurkLimit: 300,
-  monstersFor: n => n >= 8 ? 2 : 1,   // 7 人兩隻怪物時人類勝率掉到三成以下，所以 8 人才兩隻
+  monstersFor: n => n >= 8 ? 2 : 1,
+  // 主角色（非副角色）至少要這麼多人，才抽得出怪物和巫師
+  mainNeeded: n => (n >= 8 ? 2 : 1) + 1 + 1,   // 7 人兩隻怪物時人類勝率掉到三成以下，所以 8 人才兩隻
   minPlayersFor: mode => mode === 'coop' ? 3 : 5,
 };
 
@@ -342,7 +344,7 @@ function createGame({ seats, seed, speed = 'standard', mode = 'roles', now }){
     settings: SPEEDS[speed] || SPEEDS.standard, mode: mode === 'coop' ? 'coop' : 'roles',
     deadline:null, seed, rng: seed | 0,
     phase:'reveal', round:1, storms:0, maxStorms:0,
-    seats: seats.map(x => ({ id:x.id, name:x.name })),
+    seats: seats.map(x => ({ id:x.id, name:x.name, alt: !!x.alt })),
     roles:{}, fallen:{}, priv:{}, ready:{}, monster:{}, revealed:{},
     deck:[], map:{}, fakes:{}, pos:{}, stats:{}, status:{}, locks:{}, searched:{}, sealSearched:{},
     seals:{}, sinceSeal:0, maxLit:0,
@@ -350,8 +352,9 @@ function createGame({ seats, seed, speed = 'standard', mode = 'roles', now }){
     log:[], winner:null,
   };
   s.maxStorms = RULES.maxStormsFor(s.seats.length, s.mode);
-  const ids = shuffle(s, s.seats.map(x => x.id));
-  const m = s.mode === 'coop' ? 0 : RULES.monstersFor(ids.length);
+  // 副角色（一人多角的第二個角色）固定是普通人，不參加怪物、巫師的抽選
+  const ids = shuffle(s, s.seats.filter(x => !x.alt).map(x => x.id)).concat(s.seats.filter(x => x.alt).map(x => x.id));
+  const m = s.mode === 'coop' ? 0 : RULES.monstersFor(s.seats.length);
   ids.forEach((id, i) => {
     s.roles[id] = s.mode === 'coop' ? 'human' : i < m ? 'monster' : i === m ? 'witch' : 'human';
     s.priv[id] = { candle: s.roles[id] !== 'monster', checks:[], eyeUsed:false, notes:[] };

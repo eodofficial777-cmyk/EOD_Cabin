@@ -45,7 +45,9 @@ exports.onIntent = onValueCreated({ ref: '/rooms/{code}/intents/{id}', region: R
     if (type === 'start' || type === 'again') return await startGame(code, uid, type);
     if (type === 'load') return await loadGame(code, uid, String(intent.action.blob || ''));
     if (!ALLOWED.has(type)) return await reportError(code, uid, '不支援這個動作');
-    await applyIntent(code, uid, sanitize(intent.action));
+    // 一人多角：可以用副角色（uid_alt）的身份行動
+    const as = typeof intent.as === 'string' && (intent.as === uid || intent.as === uid + '_alt') ? intent.as : uid;
+    await applyIntent(code, uid, sanitize(intent.action), as);
   } catch (err) {
     console.error('intent failed', code, type, err);
     await reportError(code, uid, '伺服器出了點問題，請再試一次');
@@ -68,7 +70,20 @@ function sideMap(s) {
 }
 
 // 把狀態拆成：要存的 core、新增的紀錄
-function pack(s) {
+// 重新登入碼：每個主角色一組，副角色跟主角色共用
+const PIN_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function makePins(s) {
+  const pins = {};
+  s.seats.forEach(p => {
+    if (p.alt) return;
+    let c = ''; for (let i = 0; i < 6; i++) c += PIN_CHARS[crypto.randomInt(PIN_CHARS.length)];
+    pins[p.id] = c;
+  });
+  return pins;
+}
+const pinOf = (pins, id) => (pins || {})[id] || (pins || {})[id.replace(/_alt$/, '')] || null;
+
+function pack(s, pins) {
   const fresh = s.log;                  // 這次動作新增的紀錄
   const base = s.logCount || 0;
   s.logCount = base + fresh.length;
@@ -76,7 +91,7 @@ function pack(s) {
   const pub = E.viewFor(s, null);
   delete pub.log;
   const views = {};
-  for (const p of s.seats) views[p.id] = JSON.stringify({ me: E.viewFor(s, p.id).me });
+  for (const p of s.seats) views[p.id] = JSON.stringify({ me: E.viewFor(s, p.id).me, pin: pinOf(pins, p.id) });
   const core = {
     state: JSON.stringify(s),
     side: sideMap(s),
@@ -95,10 +110,11 @@ async function writeLogs(code, logs) {
   await getDatabase().ref(`game/${code}/log`).update(logs);
 }
 
-async function applyIntent(code, uid, action) {
-  action.seat = uid;
+async function applyIntent(code, uid, action, as) {
+  action.seat = as || uid;
   let error = null, out = null;
   const coreRef = getDatabase().ref(`game/${code}/core`);
+  const pins = (await getDatabase().ref(`game/${code}/secret/pins`).get()).val() || {};
   const result = await coreRef.transaction((cur) => {
     error = null; out = null;
     if (cur === null) { error = '遊戲還沒開始'; return null; } // 第一次可能拿到空值，SDK 會用真正的資料重跑
@@ -107,7 +123,7 @@ async function applyIntent(code, uid, action) {
     s.log = [];
     const r = E.applyAction(s, action, Date.now());
     if (r.error) { error = r.error; return; }          // 回傳 undefined = 放棄這次交易
-    out = pack(r.state);
+    out = pack(r.state, pins);
     return out.core;
   });
   if (error) {
@@ -131,7 +147,7 @@ async function readSeats(code) {
   const seatsObj = (await getDatabase().ref(`rooms/${code}/seats`).get()).val() || {};
   return Object.entries(seatsObj)
     .sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0))
-    .map(([id, v]) => ({ id, name: String(v.name || '玩家').slice(0, 12), ready: !!v.ready }));
+    .map(([id, v]) => ({ id, name: String(v.name || '玩家').slice(0, 12), ready: !!v.ready, alt: !!v.owner }));
 }
 
 async function startGame(code, uid, type) {
@@ -147,7 +163,11 @@ async function startGame(code, uid, type) {
   const minP = E.RULES.minPlayersFor(mode);
   if (seats.length < minP) return reportError(code, uid, `這個模式至少要 ${minP} 人才能開始`);
   if (seats.length > E.RULES.maxPlayers) return reportError(code, uid, `最多 ${E.RULES.maxPlayers} 人`);
-  if (type === 'start' && seats.some(p => p.id !== meta.host && !p.ready)) return reportError(code, uid, '還有人沒按準備');
+  if (type === 'start' && seats.some(p => p.id !== meta.host && !p.alt && !p.ready)) return reportError(code, uid, '還有人沒按準備');
+  if (mode === 'roles'){
+    const mains = seats.filter(p => !p.alt).length, need = E.RULES.mainNeeded(seats.length);
+    if (mains < need) return reportError(code, uid, `副角色太多了：有身份模式至少要 ${need} 位主角色，現在只有 ${mains} 位`);
+  }
 
   const speed = E.SPEEDS[meta.preset] ? meta.preset : 'standard';
   const seed = Math.floor(Math.random() * 2147483647);
@@ -159,16 +179,18 @@ async function startGame(code, uid, type) {
 async function installGame(code, uid, s, clearChat) {
   const db = getDatabase();
   let out = null, ok = false;
+  const pins = makePins(s);
   await db.ref(`game/${code}/core`).transaction((cur) => {
     ok = false;
     if (cur && cur.phase && cur.phase !== 'over') return;   // 避免重複開局
     ok = true;
     s.logCount = 0;
-    out = pack(JSON.parse(JSON.stringify(s)));
+    out = pack(JSON.parse(JSON.stringify(s)), pins);
     return out.core;
   });
   if (!ok) return reportError(code, uid, '遊戲已經開始了');
   const updates = {};
+  updates[`game/${code}/secret`] = { pins, fails: null };
   updates[`game/${code}/log`] = null;
   updates[`rooms/${code}/wolf`] = null;
   if (clearChat) updates[`rooms/${code}/chat`] = null;
@@ -201,6 +223,73 @@ async function loadGame(code, uid, blob) {
   restored.log = [{ text:`（從存檔讀取：第 ${restored.round} 輪，雷雨 ${restored.storms} 次。）`, kind:'', ts:now }];
   if (restored.deadline) restored.deadline = now + 60 * 1000;   // 讀檔後給大家一分鐘回神
   await installGame(code, uid, restored, true);
+}
+
+// ---------- 換裝置：用重新登入碼把座位接到新的帳號 ----------
+const MAX_FAILS = 8;
+exports.onReclaim = onValueCreated({ ref: '/rooms/{code}/reclaims/{id}', region: REGION, secrets: [SAVE_KEY] }, async (event) => {
+  const { code } = event.params;
+  const req = event.data.val();
+  await event.data.ref.remove();
+  if (!req || typeof req.uid !== 'string') return;
+  const newUid = req.uid;
+  try { await reclaim(code, newUid, String(req.name || '').trim(), String(req.pin || '').trim().toUpperCase()); }
+  catch (err) { console.error('reclaim failed', code, err); await reportError(code, newUid, '伺服器出了點問題，請再試一次'); }
+});
+
+async function reclaim(code, newUid, name, pin) {
+  const db = getDatabase();
+  const core = (await db.ref(`game/${code}/core`).get()).val();
+  if (!core || !core.state) return reportError(code, newUid, '這個房間現在沒有進行中的遊戲');
+  const s0 = JSON.parse(core.state);
+  const seat = s0.seats.find(p => p.name === name && !p.alt);
+  if (!seat) return reportError(code, newUid, '找不到這個角色名字（要跟遊戲裡一模一樣，副角色請用主角色的名字登入）');
+  const oldUid = seat.id;
+  if (oldUid === newUid) return reportError(code, newUid, '你現在就是這個角色了，直接用房間代碼加入即可');
+  const secret = (await db.ref(`game/${code}/secret`).get()).val() || {};
+  const fails = (secret.fails || {})[oldUid] || 0;
+  if (fails >= MAX_FAILS) return reportError(code, newUid, '這個角色的登入碼錯太多次了，暫時鎖住。請房主重新讀檔或開新局。');
+  if (!secret.pins || secret.pins[oldUid] !== pin){
+    await db.ref(`game/${code}/secret/fails/${oldUid}`).set(fails + 1);
+    return reportError(code, newUid, `登入碼不對（還可以再試 ${MAX_FAILS - fails - 1} 次）`);
+  }
+
+  // 1. 遊戲狀態：把舊 id 換成新 id（副角色 id 是「舊 id_alt」，會一起換掉）
+  const pins = {};
+  Object.entries(secret.pins).forEach(([id, c]) => { pins[id === oldUid ? newUid : id] = c; });
+  let out = null;
+  await db.ref(`game/${code}/core`).transaction((cur) => {
+    if (cur === null) return null;
+    if (!cur.state) return;
+    const s = E.remapSeats(JSON.parse(cur.state), { [oldUid]: newUid });
+    s.log = [{ text:`${name} 換了一台裝置，回到了遊戲。`, kind:'', ts:Date.now() }];
+    out = pack(s, pins);
+    return out.core;
+  });
+  if (!out) return reportError(code, newUid, '接回座位失敗，請再試一次');
+
+  // 2. 房間資料：座位、頭像、表符、房主、聊天紀錄裡的發言者
+  const room = (await db.ref(`rooms/${code}`).get()).val() || {};
+  const updates = {};
+  const move = (path, val) => { updates[`rooms/${code}/${path}`] = val; };
+  for (const [from, to] of [[oldUid, newUid], [oldUid + '_alt', newUid + '_alt']]){
+    const seatData = room.seats && room.seats[from];
+    if (seatData){ move(`seats/${to}`, { ...seatData, ...(seatData.owner ? { owner: newUid } : {}) }); move(`seats/${from}`, null); }
+    if (room.avatars && room.avatars[from]){ move(`avatars/${to}`, room.avatars[from]); move(`avatars/${from}`, null); }
+    if (room.emotes && room.emotes[from]){ move(`emotes/${to}`, room.emotes[from]); move(`emotes/${from}`, null); }
+  }
+  move(`presence/${oldUid}`, null);
+  if (room.meta && room.meta.host === oldUid) move('meta/host', newUid);
+  const swap = u => u === oldUid ? newUid : u === oldUid + '_alt' ? newUid + '_alt' : null;
+  for (const ch of ['ic', 'ooc', 'spec']){
+    Object.entries((room.chat && room.chat[ch]) || {}).forEach(([k, m]) => { const n = swap(m.uid); if (n) move(`chat/${ch}/${k}/uid`, n); });
+  }
+  Object.entries(room.wolf || {}).forEach(([k, m]) => { const n = swap(m.uid); if (n) move(`wolf/${k}/uid`, n); });
+  updates[`game/${code}/secret/pins`] = pins;
+  updates[`game/${code}/secret/fails/${oldUid}`] = null;
+  await db.ref().update(updates);
+  await writeLogs(code, out.logs);
+  await afterCommit(code, out.core);
 }
 
 // ---------- 存檔加密（AES-256-GCM） ----------
