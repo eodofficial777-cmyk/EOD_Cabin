@@ -283,6 +283,18 @@ code{background:var(--surface);padding:0 4px;border-radius:4px}
 .evlines{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.9rem}
 .evlines li.hot{color:var(--monster);font-weight:700}
 @media (prefers-reduced-motion:reduce){.die.rolling,.die.done{animation:none}}
+.pickrow{align-items:center}
+.pickrow select{font:inherit;color:var(--ink);background:var(--bg);border:2px solid var(--line);border-radius:10px;padding:6px 8px;min-height:40px;flex:1;min-width:140px}
+/* 寬螢幕：左邊紀錄（劇情與聊天）、中間地圖、右邊選單 */
+@media (min-width:1280px){
+  .wrap{max-width:1680px}
+  .game{grid-template-columns:330px minmax(0,1fr) 350px;grid-template-areas:"chat map side";align-items:start}
+  .game > .chat{position:sticky;top:calc(env(safe-area-inset-top,0px) + 96px);max-height:calc(100vh - 120px);display:flex;flex-direction:column;min-height:0}
+  .game > .chat .feed{height:auto;flex:1;min-height:200px}
+  .game > .side{position:sticky;top:calc(env(safe-area-inset-top,0px) + 96px);max-height:calc(100vh - 120px);overflow:auto}
+  .mapbox{max-height:calc(100vh - 230px)}
+}
+.btn.skill{border-color:var(--flame);color:var(--flame)}
 </style>
 </head>
 <body>
@@ -296,7 +308,7 @@ code{background:var(--surface);padding:0 4px;border-radius:4px}
 //   測試：沒有設定、或網址加上 ?local=1 時，整局在這台裝置上跑，可以切換每個人的視角。
 // =========================================================
 const L = window.LampEngine;
-const { RULES, SPEEDS, CARDS, SEALS, GEAR, ROLE_INFO, ROLE_CARDS } = L;
+const { RULES, SPEEDS, CARDS, SEALS, GEAR, ROLE_INFO, ROLE_CARDS, SKILLS } = L;
 const COLORS = ['#B9542C','#3A76A8','#5E8F45','#8A4FC6','#B68A10','#23897E','#AD4D74','#7A6449'];
 const $app = document.getElementById('app');
 const FB_VER = '10.12.2';
@@ -1357,24 +1369,26 @@ function guideHtml(section){
       ])}`,
     ops: `
       <h3>輪到你的時候（白天）</h3>${ul([
-        '<strong>點燈（1 點）</strong>：先按「點燈」進入點燈模式，再點地圖上標著「點亮」的格子。要有燭台或火柴。標著「受潮」的房間要 2 點。',
+        '<strong>點燈（1 點）</strong>：先按「點燈」進入點燈模式，再點地圖上標著「點亮」的格子。要有燭台或火柴。標著「受潮」的房間要點兩次：第一次烘乾燈芯，第二次才會亮（每次 1 點，可以分開點，也可以由不同人接力）。',
         `<strong>探索（1 點）</strong>：點地圖上發光的「點亮的黑暗」，走進去擲 1D20：1–2 遇到災獸、3–5 特殊事件、${sealRollText()}，其餘是一般房間。`,
         '<strong>移動（1 點）</strong>：點相鄰、外框是虛線的房間。沒有燭台也能摸黑走進暗房，但會擲骰遇到事件：可能受傷、被嚇到，也可能摸到火柴或燭台。',
         '<strong>摸黑搜索（1 點）</strong>：在暗房裡也能搜索，比亮著的房間危險，但更容易摸到燭台。',
         `<strong>攻擊（1 點）</strong>：理智崩潰、身份曝光的怪物跟你在同一間房時，可以攻擊牠。累積 ${RULES.stunAt} 點傷害就能壓制牠（下次雷雨不能作祟），造成的傷害也會讓中庭的怪物變弱。`,
-        '<strong>搜索（1 點）</strong>：在亮著的房間按「搜索這間」，可能找到燭台、火柴、裝備，也可能被嚇到。每次雷雨之間，每間只能搜一次。',
+        `<strong>搜索（1 點）</strong>：在房間裡按「搜索這間」，可能找到燭台、火柴、裝備，也可能被嚇到。同一間房要等雷雨過後才能再搜，整局最多 ${RULES.searchLimit} 次，之後就「翻遍」了，要往外探索新房間。`,
         '<strong>鑰匙（不花點數）</strong>：從選單挑一間房按「上鎖」。鎖上的房間到雷雨結束前誰都不能進出；不能鎖自己所在的那間。只有普通人和巫師有鑰匙。把可疑的人鎖起來，他雷雨時就只能對同一間出手。',
         '<strong>結束回合</strong>：點數沒用完也可以提早結束。',
       ])}
       <h3>雷雨時</h3>${ul([
         '普通人：躲好就好，按「等雷雨過去」。',
-        '巫師：可以選一個人，用燭火看見他的真實（整局一次，燭台會燃盡）；或張開守護結界保護一個人，讓他這次雷雨不被偷、不被作祟、房間不被熄燈（整局 ' + RULES.wardUses + ' 次）。',
-        '怪物：熄燈、偷落單者的燭台、作祟某人，三選一。',
+        '巫師（四選一）：用燭火看見一個人的真實（整局一次，燭台會燃盡）；張開守護結界保護一個人，讓他這次雷雨不被偷、不被作祟、房間不被熄燈（整局 ' + RULES.wardUses + ' 次）；張開封印結界守護一間封印房，連風都吹不熄（整局 ' + RULES.sealWardUses + ' 次）；或什麼都不做。沒用完的結界會在決戰變成「結界束縛」。',
+        '怪物：熄燈、偷落單者的燭台、作祟某人，三選一。被鎖在房間裡的怪物只能熄自己那一間的燈、作祟同一間的人，偷不到燭台，也碰不到其他房間（包括封印房）。',
         '小技巧：雷雨時跟隊友待在同一間，燭台比較不會被偷。',
       ])}
       <h3>中庭決戰</h3>${ul([
         '每回合所有人同時選行動，時間到沒選會自動攻擊。',
-        '人類可以：攻擊、守護隊友、燭火（消耗燭台，必中）、穩住心神（回復理智）。',
+        '人類可以：攻擊、守護隊友、燭火（消耗燭台，必中 2D6）、穩住心神（回復理智）、丟火柴（燒傷 1D6，這回合怪物防禦 -2，大家更容易命中）。',
+        '裝備會變成技能：收割者的鐮刀「收割」（命中造成 2D6）、稻草人的厚斗篷「斗篷庇護」（全隊這回合受傷 -2）、黑貓骨墜「黑貓的呼嚕」（全隊理智 +1D10、瘋狂的人清醒）、屬於自己的裝備「找回原本的力量」（必中 3D6）。巫師另有「結界束縛」：讓怪物這回合的招式失效。',
+        '怪物陣營撿到的裝備和火柴，決戰時會讓深淵的怪物更強（HP、攻擊、防禦都會上升）。',
         'HP 歸零會倒下；理智歸零會陷入瘋狂，開始亂打人。',
       ])}`,
     legend: `
@@ -1382,7 +1396,7 @@ function guideHtml(section){
         '暖色發光的房間：亮著。灰色的房間：暗掉了。',
         '虛線發光的格子「點亮的黑暗」：已經點亮、還沒探索，可以走進去探索。',
         '雙線外框：封印房。',
-        '「受潮」：被怪物熄過，重點要 2 點。「已搜」：這段時間被搜過了。🔒：上鎖。',
+        '「受潮」：被怪物熄過，要點兩次才會亮（第一次烘乾燈芯）。「已搜」：要等雷雨過後才能再搜。「翻遍」：這間不能再搜了。🔒：上鎖。',
         '外框虛線的格子：這回合可以點的地方。',
         '頭像外圈紅色：理智崩潰、身份已經曝光的怪物。',
       ])}
@@ -1418,9 +1432,8 @@ function cellAction(pub, k){
     if (!(near || k === here)) return null;
     if (!c) return k === here ? null : { act:'light', label:'點亮' };
     if (!c.lit){
-      // 受潮的房間一次花 2 點點亮；行動點不夠就不讓點，免得按了才報錯
-      if (c.wet && pub.ap < RULES.wetCost) return null;
-      return { act:'light', label: c.wet ? `點亮（${RULES.wetCost} 點）` : '點亮' };
+      // 受潮的房間要點兩次：第一次烘乾燈芯，第二次才會亮
+      return { act:'light', label: c.wet ? '烘乾燈芯' : '點亮' };
     }
     return null;
   }
@@ -1461,7 +1474,7 @@ function mapView(pub){
       if (C.seal) cls.push('sealroom');
       if (k === here) cls.push('here');
       if (act) cls.push('reach');
-      const flags = [C.seal ? `${C.tag}封印房` : C.tag, pub.searched[k] ? '已搜' : '', c.wet ? '受潮' : '', act && act.label ? act.label : ''].filter(Boolean).join(' ');
+      const flags = [C.seal ? `${C.tag}封印房` : C.tag, ((pub.searchCount || {})[k] || 0) >= RULES.searchLimit ? '翻遍' : pub.searched[k] ? '已搜' : '', c.wet ? '受潮' : '', act && act.label ? act.label : ''].filter(Boolean).join(' ');
       cells += `<${Tag} class="${cls.join(' ')}" ${attrs} aria-label="${esc(C.name)}${c.lit ? '' : '（暗）'}">
         ${pub.locks[k] ? '<span class="lock" title="上鎖了">🔒</span>' : ''}${fakes.has(k) ? '<span class="fake">假</span>' : ''}
         <span class="rname">${esc(C.name)}</span><span class="rtag">${esc(flags)}</span>
@@ -1517,7 +1530,7 @@ function myBlock(pub){
   if (st.lockUsed) effects.push('這段時間已經用過鑰匙');
   rows.push(['狀態', effects.length ? effects.join('<br>') : '一切正常']);
   if (me.monster) rows.push(['怪物', `理智 ${Math.max(0, me.monster.sanity)} / ${RULES.monsterSanity}，偷到的燭台 ${me.monster.stolen} 個`]);
-  if (me.role === 'witch') rows.push(['能力', (me.eyeUsed ? '已經看過真實' : (me.candle ? '雷雨時可以用燭火看見一個人的真實（一次）' : '要有燭台才能看見真實')) + `<br>守護結界還剩 ${me.wards} 次`]);
+  if (me.role === 'witch') rows.push(['能力', (me.eyeUsed ? '已經看過真實' : (me.candle ? '雷雨時可以用燭火看見一個人的真實（一次）' : '要有燭台才能看見真實')) + `<br>守護結界還剩 ${me.wards} 次、封印結界還剩 ${me.sealWards || 0} 次<br><span class="muted small">沒用完的會變成決戰的「結界束縛」</span>`]);
   if (me.checks.length) rows.push(['看見的真實', me.checks.map(c => `${esc(nameOf(c.target))} 是${ROLE_INFO[c.role].name}`).join('、')]);
   if (me.allies.length) rows.push(['同夥', me.allies.map(id => esc(nameOf(id))).join('、')]);
   return `<div class="myrole">
@@ -1537,7 +1550,8 @@ function panelView(pub){
     const id = L.cur(pub);
     if (id === app.uid && me){
       const here = pub.pos[id], c = pub.map[here], st = pub.status[id];
-      const searchable = !pub.searched[here];
+      const exhausted = ((pub.searchCount || {})[here] || 0) >= RULES.searchLimit;
+      const searchable = !pub.searched[here] && !exhausted;
       const human = !isMonsterSide(me.role);
       const foes = human ? pub.seats.filter(p => p.id !== id && pub.revealed[p.id] && pub.pos[p.id] === here) : [];
       const lockable = Object.keys(pub.map).filter(k => pub.map[k].explored && !pub.locks[k] && k !== here);
@@ -1552,7 +1566,7 @@ function panelView(pub){
           <button class="btn" data-act="endTurn" ${Bz}>結束回合</button>
         </div>
         ${me.role !== 'monster' && !me.candle && !st.matches ? '<p class="small role-monster">你沒有燭台也沒有火柴，點不了燈。可以摸黑走進暗房、摸黑搜索：比較危險，但容易摸到燭台。</p>' : ''}
-        ${pub.searched[here] ? '<p class="muted small">這間這段時間已經被搜過了。</p>' : !c.lit ? '<p class="muted small">這裡是暗的：摸黑搜索比較危險，但更容易摸到燭台。</p>' : ''}
+        ${exhausted ? '<p class="muted small">這間已經被翻遍了，往外探索看看吧。</p>' : pub.searched[here] ? '<p class="muted small">這間要等下次雷雨過後才能再搜。</p>' : !c.lit ? '<p class="muted small">這裡是暗的：摸黑搜索比較危險，但更容易摸到燭台。</p>' : ''}
         ${foes.length ? `<p class="small role-monster">曝光的怪物就在這間房！攻擊命中會造成傷害，累積 ${RULES.stunAt} 點就能壓制牠；沒打中會被反擊。</p>` : ''}
         ${!human ? '<p class="muted small">你沒有鑰匙，不能鎖門。</p>' : `<div class="row lockrow">
           <div class="field"><label for="lockTarget">鑰匙（每次雷雨之間一次）</label>
@@ -1577,7 +1591,7 @@ function panelView(pub){
   const chips = p => {
     const st = pub.status[p.id], S = pub.stats[p.id], out = [];
     out.push(`<span class="chip">HP ${S.hp}</span><span class="chip">SAN ${S.san}</span>`);
-    if (app.mode === 'online' && !app.presence[p.id]) out.push('<span class="chip">離線</span>');
+    if (app.mode === 'online' && !app.presence[ownerOf(p.id)]) out.push('<span class="chip">離線</span>');
     if (pub.revealed[p.id]) out.push(`<span class="chip bad">狂暴的怪物</span><span class="chip">受創 ${(pub.wounds || {})[p.id] || 0} / ${RULES.stunAt}</span>`);
     if (st.stunned) out.push('<span class="chip good">被壓制</span>');
     if (st.skip) out.push('<span class="chip bad">下回合不能行動</span>');
@@ -1605,7 +1619,7 @@ function noMoveHint(pub, me){
   const canLight = me.role === 'monster' || me.candle || st.matches > 0;
   const lightable = canLight && [here, ...L.adj(here)].some(k => { const x = pub.map[k]; return k === here ? x && !x.lit : !x || !x.lit; });
   const anyMove = !pub.locks[here] && L.adj(here).some(k => { const x = pub.map[k]; return x && !pub.locks[k] && (!x.explored ? x.lit : true); });
-  const canSearch = !pub.searched[here];
+  const canSearch = !pub.searched[here] && ((pub.searchCount || {})[here] || 0) < RULES.searchLimit;
   if (lightable || anyMove || canSearch) return '';
   return `<p class="toast">你現在沒有能做的事${pub.locks[here] ? '（被鎖在房間裡）' : ''}，按「結束回合」交給下一位。</p>`;
 }
@@ -1638,6 +1652,13 @@ function forceBox(pub){
     <button class="btn quiet" data-act="force" data-label="${esc(label)}">${label}</button></div>`;
 }
 
+// 下拉選單＋確認按鈕：選項多的時候比一排按鈕簡潔
+function pickRow(kind, options, label, empty = ''){
+  if (!options.length) return `<p class="small muted">${empty || '沒有可以選的目標'}</p>`;
+  return `<div class="row pickrow"><select id="pick-${kind}" aria-label="${esc(label)}的目標">${options.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('')}</select>
+    <button class="btn" data-act="stormPick" data-kind="${kind}" ${ui.busy ? 'disabled' : ''}>${esc(label)}</button></div>`;
+}
+
 function stormPanel(pub, me){
   const Bz = ui.busy ? 'disabled' : '';
   if (!me) return `<h2>雷雨</h2><p>大家正在黑暗中行動（${pub.stormSubmitted.length} / ${pub.seats.length}）。</p>`;
@@ -1660,16 +1681,16 @@ function stormPanel(pub, me){
     return `<h2 class="role-monster">雷雨來了，要怎麼作祟？</h2>
       ${pub.revealed[app.uid] ? '<p class="small role-monster"><strong>狂暴中</strong>：熄燈會連相鄰一盞一起熄、偷燭台不用等對方落單、作祟更可怕。</p>' : `<p class="small">理智 ${Math.max(0, me.monster.sanity)} / ${RULES.monsterSanity}。這次不作祟，理智會 -1，歸零就會曝光。</p>`}
       <p class="small"><strong>熄燈</strong>：鎖上的房間進不去。</p>
-      <div class="choices">${me.snuffTargets.map(k => btn('snuff', k, esc(cellLabel(pub, k)))).join('') || '<span class="small muted">沒有能熄的燈</span>'}</div>
-      <p class="small"><strong>偷燭台</strong>：只對落單、而且不在鎖上房間裡的人有用。</p>
-      <div class="choices">${others.map(p => btn('steal', p.id, `${esc(p.name)}${alone(p.id) && !pub.locks[pub.pos[p.id]] ? '（落單）' : ''}`)).join('')}</div>
+      ${pickRow('snuff', me.snuffTargets.map(k => [k, cellLabel(pub, k) + (CARDS[(pub.map[k] || {}).card || 'filler'].seal ? '（封印房）' : '')]), '熄掉這盞', '沒有能熄的燈')}
+      <p class="small"><strong>偷燭台</strong>：${pub.revealed[app.uid] ? '狂暴中，不用等對方落單；' : '只對落單、'}不在鎖上房間裡的人有用。</p>
+      ${pickRow('steal', others.map(p => [p.id, p.name + (alone(p.id) && !pub.locks[pub.pos[p.id]] ? '（落單）' : pub.locks[pub.pos[p.id]] ? '（房間上鎖）' : '')]), '偷走燭台')}
       <p class="small"><strong>作祟</strong>：普通人會嚇得下回合不能行動；如果是巫師，有機會讓她墮落成魔人。</p>
-      <div class="choices">${others.map(p => btn('haunt', p.id, esc(p.name))).join('')}</div>
+      ${pickRow('haunt', others.map(p => [p.id, p.name]), '作祟')}
       ${btn('none', '', '這次不作祟', 'quiet')}`;
   }
   if (me.role === 'fallen'){
     return `<h2 class="role-monster">雷雨來了</h2><p class="small">魔人可以熄掉一盞沒上鎖的燈。</p>
-      <div class="choices">${me.snuffTargets.map(k => btn('snuff', k, esc(cellLabel(pub, k)))).join('')}</div>${btn('none', '', '不動手', 'quiet')}`;
+      ${pickRow('snuff', me.snuffTargets.map(k => [k, cellLabel(pub, k)]), '熄掉這盞', '沒有能熄的燈')}${btn('none', '', '不動手', 'quiet')}`;
   }
   if (me.role === 'witch'){
     const canEye = me.candle && !me.eyeUsed;
@@ -1680,7 +1701,13 @@ function stormPanel(pub, me){
     const ward = me.wards > 0 ? `<p class="small"><strong>守護結界</strong>（還剩 ${me.wards} 次）：被守護的人這次雷雨不會被偷燭台、不會被作祟，他所在的房間也不會被熄燈。</p>
       <div class="choices">${others.map(p => `<button class="btn" data-act="storm" data-kind="ward" data-target="${p.id}" ${p.id === lastT || ui.busy ? 'disabled' : ''}>${esc(p.name)}${p.id === lastT ? '（上次守過）' : ''}</button>`).join('')}</div>`
       : '<p class="small muted">守護結界的次數用完了。</p>';
-    return `<h2 class="role-witch">雷雨來了，要怎麼做？</h2><p class="small">看見真實和守護結界，一次雷雨只能選一個。</p>${eye}${ward}${btn('none', '', '這次都不用', 'quiet')}`;
+    const sealRooms = Object.keys(pub.map).filter(k => pub.map[k].explored && CARDS[pub.map[k].card].seal && !pub.seals[CARDS[pub.map[k].card].seal]);
+    const sealWard = me.sealWards > 0
+      ? `<p class="small"><strong>封印結界</strong>（還剩 ${me.sealWards} 次）：守護一間封印房，這次雷雨它不會熄滅，連雷雨的風都吹不熄。</p>
+        ${pickRow('sealWard', sealRooms.map(k => [k, CARDS[pub.map[k].card].name + (pub.map[k].lit ? '' : '（暗）')]), '守護這間', '目前沒有需要守護的封印房')}`
+      : '<p class="small muted">封印結界已經用過了。</p>';
+    const left = (me.wards || 0) + (me.sealWards || 0);
+    return `<h2 class="role-witch">雷雨來了，要怎麼做？</h2><p class="small">看見真實、守護結界、封印結界，一次雷雨只能選一個。${left ? `沒用完的結界（現在 ${left} 次）會在中庭決戰變成束縛怪物的力量。` : ''}</p>${eye}${ward}${sealWard}${btn('none', '', '這次都不用', 'quiet')}`;
   }
   return `<h2>雷雨來了</h2><p>你縮在角落，聽著外面的雷聲和腳步聲。</p>${btn('none', '', '等雷雨過去', 'primary')}`;
 }
@@ -1697,13 +1724,20 @@ function battlePanel(pub, me){
     if (b.mad[id]) return '<h2>你陷入瘋狂</h2><p>每回合會隨機攻擊，可能打到怪物，也可能打到隊友。</p>';
     if (done) return `<h2>第 ${b.round} 回合</h2><p>你已經選好行動，等其他人（${pub.battleSubmitted.length} 人已選）。</p>`;
     const g = L.gearTotal(pub, id);
+    const matches = pub.status[id].matches || 0;
+    const skillList = Object.entries((b.skills || {})[id] || {});
     return `<h2>第 ${b.round} 回合，你要怎麼做？</h2>
       <p class="small muted">命中加成 +${g.atk + b.rec}，傷害 1D6${g.dmg ? '+' + g.dmg : ''}，護甲 ${g.armor}。怪物的防禦每回合重擲 1D10+${RULES.bossDefBase}。</p>
       <div class="choices">
         ${btn('attack', '', '攻擊', 'primary')}
         ${btn('fire', '', me.candle ? '燭火（消耗燭台，2D6 必中）' : '燭火（沒有燭台）', '', !me.candle)}
         ${btn('calm', '', '穩住心神（理智 +1D10）')}
+        ${btn('match', '', matches ? `丟火柴（剩 ${matches} 根）` : '丟火柴（沒有火柴）', '', !matches)}
       </div>
+      <p class="small muted">丟火柴：燒傷 1D6，火光照出弱點，這回合怪物防禦 -2（兩人以上一起丟最多 -4），大家更容易命中。</p>
+      ${skillList.length ? `<p class="small"><strong>裝備技能</strong></p>
+      <div class="choices">${skillList.map(([k, n]) => btn(k, '', `${SKILLS[k].name}（剩 ${n} 次）`, 'skill', !n)).join('')}</div>
+      <ul class="small muted plain">${skillList.map(([k]) => `<li>${SKILLS[k].name}：${SKILLS[k].desc}</li>`).join('')}</ul>` : '<p class="small muted">找到裝備的話，決戰時會多出技能可以用。</p>'}
       <p class="small"><strong>守護</strong>：替隊友擋下這回合的攻擊，自己護甲 +2。</p>
       <div class="choices">${living.filter(h => h !== id).map(h => btn('guard', h, esc(nameOf(h)))).join('')}</div>
       <p class="small muted">時間到沒選的話，會自動攻擊。</p>`;
@@ -1892,6 +1926,7 @@ $app.addEventListener('click', async e => {
     case 'attack': send({ type:'attack', target:d.id }); break;
     case 'lock': send({ type:'lock', target:document.getElementById('lockTarget').value }); break;
     case 'endTurn': ui.lightMode = false; ui.endedByMe = true; send({ type:'endTurn' }); break;
+    case 'stormPick': { const el = document.getElementById('pick-' + d.kind); if (el && el.value) send({ type:'stormAction', kind:d.kind, target:el.value }); break; }
     case 'storm': send({ type:'stormAction', kind:d.kind, target:d.target || '' }); break;
     case 'battle': send({ type:'battleAction', act:d.a, target:d.target || '' }); break;
     case 'showCard': ui.guide = null; ui.showCard = true; render(); break;
