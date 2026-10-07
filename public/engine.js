@@ -25,11 +25,14 @@ const RULES = {
   sealRollFor: n => n <= 5 ? 17 : n === 6 ? 18 : 19,
   // 連續這麼多次沒遇到封印房，下一次保證是封印房（人少時保底更快到）
   sealPityFor: n => n <= 5 ? 5 : n === 6 ? 6 : 8,
-  wetCost: 2,            // 被怪物熄掉的房間，燈芯受潮，重點要花的行動點
+  // 被怪物熄掉的房間燈芯受潮：要點兩次才會亮（第一次只是把燈芯烘乾），每次 1 點行動點
   revealSec: 45,         // 看身份卡的時間
   monsterSanity: 3,      // 怪物的理智上限；雷雨時沒作祟就 -1，歸零身份公開
   hauntFall: 11,         // 作祟巫師時擲 1D20，達到這個數字巫師墮落成魔人
-  wardUses: 2,           // 巫師的守護結界整局可以用幾次（不消耗燭台）
+  searchLimit: 2,        // 每間房整局最多能搜幾次（每次雷雨之間只能搜一次），搜完就「翻遍了」，逼大家往外探索
+  wardUses: 2, 
+  sealWardUses: 1,       // 巫師的封印結界：整局可以守護封印房一次，那次雷雨它不會熄滅
+            // 巫師的守護結界整局可以用幾次（不消耗燭台）
   hauntFallFrenzy: 8,    // 理智崩潰（狂暴）的怪物作祟巫師時，門檻降到這個數字
   attackDC: 12,          // 白天攻擊曝光的怪物：1D20 + 命中加成 ≥ 這個數字就命中
   stunAt: 10,            // 怪物在屋內累積受到這麼多傷害，就會被壓制（下次雷雨不能作祟、下回合不能行動）
@@ -40,7 +43,11 @@ const RULES = {
   bossHp: 50,            // 原版設定：HP 50
   bossDefBase: 8,        // 原版設定：DEF 1D10 + 護甲 8
   bossHpPerCandle: 5,    // 怪物每偷走一個燭台，頭目 HP +5
-  bossHpPerExtra: 27,    // 人類每多於 3 人，頭目 HP +27
+  bossHpPerExtra: 32,    // 人類每多於 3 人，頭目 HP +32
+  bossHpPerGear: 6,      // 怪物陣營每件裝備：頭目 HP +6（武器另外 +1 傷害、護具另外 +1 防禦）
+  bossHpPerMatch: 3,     // 怪物陣營每根火柴：頭目 HP +3
+  minionEvery: 1,        // 爪牙每幾回合出手一次（1＝每回合）
+  bossHpExtraCap: 65,    // 怪物陣營有爪牙時（第二隻怪物或魔人），人數加成最多加到這麼多（8 人局的平衡點）
   bossBite: 3,           // 撕咬傷害：幾顆 D6
   fireBonus: 0,          // 燭火傷害 2D6 + 這個數字
   bossTail: 1,          // 怪物每回合額外的甩尾攻擊次數（隨機目標，1D6）
@@ -103,10 +110,19 @@ const SEALS = [
 
 // 裝備：探索和搜索時找到，數值會帶進中庭決戰
 const GEAR = {
-  weapon: { name:'順手的武器',     atk:1, dmg:1, armor:0, san:0 },
-  armor:  { name:'厚實的護具',     atk:0, dmg:0, armor:1, san:0 },
-  charm:  { name:'熟悉的飾品',     atk:0, dmg:0, armor:0, san:10 },
+  weapon: { name:'收割者的鐮刀',   atk:1, dmg:1, armor:0, san:0 },
+  armor:  { name:'稻草人的厚斗篷', atk:0, dmg:0, armor:1, san:0 },
+  charm:  { name:'黑貓骨墜',       atk:0, dmg:0, armor:0, san:10 },
   own:    { name:'屬於自己的裝備', atk:1, dmg:2, armor:1, san:5 },
+};
+
+// 裝備在中庭決戰提供的技能：每件裝備給對應技能的使用次數
+const SKILLS = {
+  smash:    { gear:'weapon', name:'收割',           perItem:1, desc:'揮下鐮刀全力一擊：命中時造成 2D6＋傷害加成' },
+  cover:    { gear:'armor',  name:'斗篷庇護',       perItem:1, desc:'展開斗篷擋在大家前面：這回合所有隊友受到的傷害 -2' },
+  soothe:   { gear:'charm',  name:'黑貓的呼嚕',     perItem:1, desc:'骨墜裡傳來貓的呼嚕聲：全體隊友理智 +1D10，陷入瘋狂的人會清醒過來' },
+  ultimate: { gear:'own',    name:'找回原本的力量', perItem:1, desc:'必中，造成 3D6 傷害' },
+  bind:     { gear:null,     name:'結界束縛',       perItem:0, desc:'巫師把雷雨時沒用完的結界之力纏到怪物身上：這回合牠選的招式失效（甩尾照樣會來）' },
 };
 
 // 災獸：探索擲到 1–2
@@ -200,7 +216,7 @@ const DARK_EVENTS = [
 const SEARCH = {
   common: [
     { t:'抽屜裡有幾根火柴。', fx:'match' },
-    { t:'衣櫃裡掛著一件厚實的外套。', fx:'armor' },
+    { t:'衣櫃裡掛著一件稻草人穿過的厚斗篷。', fx:'armor' },
     { t:'一盒乾燥的火柴。', fx:'match' },
     { t:'只有灰塵和蜘蛛網。', fx:'none' },
     { t:'鏡子裡的倒影對你笑，你一直覺得背後發毛。', fx:'sanDown' },
@@ -218,9 +234,9 @@ const SEARCH = {
     { t:'墓碑上刻著你的名字，你嚇得動彈不得。', fx:'skipNext' },
     { t:'守墓人的油燈旁留著一個燭台。', fx:'candle' },
     { t:'一隻冰冷的手抓住你的腳踝，你被詛咒了。', fx:'curse' },
-    { t:'一條陌生又熟悉的項鍊，戴上後心情平靜許多。', fx:'charm' },
+    { t:'一條掛著黑貓骨頭的墜子，戴上後心情平靜許多。', fx:'charm' },
     { t:'只是一堆枯葉。', fx:'none' },
-    { t:'守墓人的鏟子，比想像中好用。', fx:'weapon' },
+    { t:'只是一堆碎骨頭。', fx:'none' },
   ],
   moon: [
     { t:'月光照出牆上的祕密通道。', fx:'warp' },
@@ -228,7 +244,7 @@ const SEARCH = {
     { t:'貓頭鷹一直盯著你，你不太敢動。', fx:'apDown' },
     { t:'窗台上有人留下火柴。', fx:'match' },
     { t:'雲遮住月亮，你的影子不見了。你被詛咒了。', fx:'curse' },
-    { t:'鏡框後面藏著一面小圓盾。', fx:'armor' },
+    { t:'鏡框後面掛著一件繡著月亮的厚斗篷。', fx:'armor' },
   ],
 };
 
@@ -238,12 +254,13 @@ const ROLE_CARDS = {
     win:  ['三道封印全部解開，並在中庭決戰打倒怪物'],
     lose: ['人類陣營所有人都失去燭台', `第 {storms} 次雷雨過後封印還沒解完`, '中庭決戰時所有人倒下或陷入瘋狂'],
     can:  [
-      '點燈：用燭台點亮所在房間或相鄰的一格（1 點；被熄過的房間 2 點）',
+      '點燈：用燭台點亮所在房間或相鄰的一格（1 點）。被怪物熄過、受潮的房間要點兩次才會亮',
       '探索：走進點亮的黑暗，擲 1D20 決定遇到什麼（1 點）',
-      '搜索：亮著的房間可以翻找，每次雷雨之間每間房只能搜一次（1 點）',
+      `搜索：亮著的房間可以翻找（1 點）。同一間房要等雷雨過後才能再搜，整局最多 ${RULES.searchLimit} 次，搜完就翻遍了`,
       '鑰匙：每次雷雨之間可以鎖一間房（不能鎖自己所在的那間），鎖上後到雷雨結束前誰都不能進出（不花行動點）',
       '把可疑的人鎖在房間裡，他在雷雨時就只能對同房間出手',
       '落單時燭台可能被偷，跟隊友待在同一間比較安全',
+      '中庭決戰時，火柴可以丟向怪物照出弱點（燒傷 1D6，這回合大家更容易命中）；找到的裝備會變成決戰技能',
       '沒有燭台也能摸黑走進暗房、在暗房裡摸黑搜索：容易出事，但也比較容易摸到燭台',
       `身份曝光的怪物跟你在同一間房時，可以攻擊牠（1 點）；累積 ${RULES.stunAt} 點傷害就能壓制牠，造成的傷害也會削弱中庭的怪物`,
     ],
@@ -252,12 +269,16 @@ const ROLE_CARDS = {
     win:  ['三道封印全部解開，並在中庭決戰打倒怪物'],
     lose: ['人類陣營所有人都失去燭台', `第 {storms} 次雷雨過後封印還沒解完`, '中庭決戰時所有人倒下或陷入瘋狂'],
     can:  [
-      '和普通人一樣可以點燈、探索、搜索、上鎖，也能攻擊身份曝光的怪物',
-      '雷雨時用燭火看見一個人的真實（整局一次，用完燭台燃盡，之後要再找燭台才能點燈）',
-      `雷雨時也可以改成張開守護結界保護一個人：他不會被偷燭台、不會被作祟，他所在的房間也不會被熄燈（整局 ${RULES.wardUses} 次，不能連續兩次守護同一人，不能守護自己）`,
-      '結界擋下作祟時，你會知道；大家只會看到「有一道結界擋下了什麼」',
-      '看到的結果只有你知道，要不要說、跟誰說由你決定',
-      `被怪物作祟時擲 1D20，${RULES.hauntFall} 以上會墮落成魔人，改站怪物那邊`,
+      '白天：和普通人一樣可以點燈、探索、搜索、上鎖，也能攻擊身份曝光的怪物',
+      '雷雨時，下面四件事選一件做：',
+      '① 看見真實：用燭火看一個人的身份（整局 1 次，要有燭台，用完燭台燃盡，之後要再找燭台才能點燈）',
+      `② 守護結界：保護一個人，他這次雷雨不會被偷燭台、不會被作祟，他所在的房間也不會被熄燈（整局 ${RULES.wardUses} 次，不能守護自己，不能連續兩次守同一人）`,
+      `③ 封印結界：守護一間還沒解開的封印房，這次雷雨它不會熄滅，連雷雨的風都吹不熄（整局 ${RULES.sealWardUses} 次）`,
+      '④ 什麼都不做，把力量留到最後',
+      '結界擋下作祟時，只有你會知道擋下了誰的災難；大家只會看到「有一道結界擋下了什麼」。看見真實的結果也只有你知道，要不要說、跟誰說由你決定',
+      '中庭決戰：守護結界和封印結界沒用完的次數，會變成「結界束縛」，每次可以讓怪物一回合選的招式失效',
+      `小心：怪物會想找出你。被怪物作祟時擲 1D20，${RULES.hauntFall} 以上（狂暴的怪物是 ${RULES.hauntFallFrenzy} 以上）會墮落成魔人，改站怪物那邊；結界和能力也會一起失去`,
+      '沒有燭台的時候，結界還是能用，只是看不見真實',
     ],
   },
   monster: {
@@ -271,8 +292,10 @@ const ROLE_CARDS = {
       `雷雨時沒作祟，理智 -1；理智歸零身份公開（上限 ${RULES.monsterSanity}）`,
       '理智崩潰後陷入狂暴：熄燈會連相鄰一盞一起熄、偷燭台不用等對方落單、作祟更可怕；但大家也能在同一間房攻擊你，被壓制時下次雷雨不能作祟',
       '你沒有鑰匙，不能鎖門',
-      '被鎖在房間裡時，雷雨只能熄同一間的燈、作祟同一間的人',
+      '被鎖在房間裡時：雷雨只能熄你所在那一間的燈、作祟同一間的人；偷不到燭台，也碰不到其他房間（包括封印房）。如果你剛好被鎖在封印房裡，還是可以熄它的燈',
+      '鎖上的房間、巫師守護的人所在的房間，你都熄不了；已經解開的封印房永遠亮著',
       '封印解開後，在中庭決戰親自操控深淵的怪物',
+      '你和魔人撿到的裝備、火柴，到決戰時都會被深淵吞下：每件裝備讓怪物 HP +6（武器加攻擊、斗篷加防禦），每根火柴 HP +3。所以搜索房間對你也有好處',
     ],
   },
   fallen: {
@@ -284,9 +307,9 @@ const ROLE_CARDS = {
     win:  ['三道封印全部解開，並在中庭決戰打倒怪物'],
     lose: [`第 {storms} 次雷雨過後封印還沒解完`, '中庭決戰時所有人倒下或陷入瘋狂'],
     can:  [
-      '點燈：用燭台點亮所在房間或相鄰的一格（1 點；受潮的房間 2 點）',
+      '點燈：用燭台點亮所在房間或相鄰的一格（1 點）。受潮的房間要點兩次才會亮',
       '探索：走進點亮的黑暗，擲 1D20 決定遇到什麼（1 點）',
-      '搜索：亮著的房間每次雷雨之間可以搜一次（1 點）',
+      `搜索：同一間房要等雷雨過後才能再搜，整局最多 ${RULES.searchLimit} 次（1 點）`,
       '鑰匙：鎖上的房間雷雨時不會被熄燈，但雷雨結束前誰都不能進出',
       '雷雨會隨機熄掉兩盞燈',
     ],
@@ -328,7 +351,7 @@ const ENDINGS = {
 
 const ROLE_INFO = {
   human:   { name:'普通人', cls:'role-human',   desc:'要相信巫師，對所有人存疑。用燭台點亮房間、解開三道封印。鑰匙每次雷雨之間可以鎖一間房，怪物進不去。' },
-  witch:   { name:'巫師',   cls:'role-witch',   desc:'與普通人一起揪出潛伏在人群中的怪物。雷雨時可以用燭台的火光看見一個人的真實（用完會失去燭台），或張開結界守護一個人。如果被怪物作祟，可能墮落成魔人。' },
+  witch:   { name:'巫師',   cls:'role-witch',   desc:'與普通人一起揪出潛伏在人群中的怪物。雷雨時可以用燭台的火光看見一個人的真實（用完會失去燭台），或張開結界守護一個人、守護一間封印房；沒用完的結界會在決戰時變成束縛怪物的力量。如果被怪物作祟，可能墮落成魔人。' },
   monster: { name:'怪物',   cls:'role-monster', desc:`你沒有燭台，但可以假裝點燈（假的燈在下次雷雨時熄滅）。雷雨時可以在黑暗中自由移動作祟：熄燈、偷走落單者的燭台，或作祟某人。太久沒作祟會失去理智、身份曝光。所有人都失去燭台，或撐過第 {storms} 次雷雨，你就贏了。封印解開後，你將親自操控中庭的怪物。` },
   fallen:  { name:'魔人',   cls:'role-monster', desc:'你被怪物作祟，墮落成魔人，現在站在怪物那一邊。雷雨時可以熄燈，中庭決戰時與怪物並肩作戰。' },
 };
@@ -403,7 +426,7 @@ function createGame({ seats, seed, speed = 'standard', mode = 'roles', now }){
     phase:'reveal', round:1, storms:0, maxStorms:0,
     seats: seats.map(x => ({ id:x.id, name:x.name, alt: !!x.alt })),
     roles:{}, fallen:{}, priv:{}, ready:{}, monster:{}, revealed:{},
-    deck:[], map:{}, fakes:{}, pos:{}, stats:{}, status:{}, locks:{}, searched:{}, sealSearched:{},
+    deck:[], map:{}, fakes:{}, pos:{}, stats:{}, status:{}, locks:{}, searched:{}, searchCount:{}, sealSearched:{},
     seals:{}, sinceSeal:0, maxLit:0, storeUsed:false,
     turnOrder:[], turnIdx:0, ap:0, stormActs:{}, lastStorm:null, battle:null,
     log:[], winner:null,
@@ -414,7 +437,7 @@ function createGame({ seats, seed, speed = 'standard', mode = 'roles', now }){
   const m = s.mode === 'coop' ? 0 : RULES.monstersFor(s.seats.length);
   ids.forEach((id, i) => {
     s.roles[id] = s.mode === 'coop' ? 'human' : i < m ? 'monster' : i === m ? 'witch' : 'human';
-    s.priv[id] = { candle: s.roles[id] !== 'monster', checks:[], eyeUsed:false, notes:[], wards: s.roles[id] === 'witch' ? RULES.wardUses : 0, lastWard:null };
+    s.priv[id] = { candle: s.roles[id] !== 'monster', checks:[], eyeUsed:false, notes:[], wards: s.roles[id] === 'witch' ? RULES.wardUses : 0, lastWard:null, sealWards: s.roles[id] === 'witch' ? RULES.sealWardUses : 0 };
     if (s.roles[id] === 'monster') s.monster[id] = { sanity:RULES.monsterSanity, stolen:0, wounds:0, dealt:0 };
   });
   s.deck = shuffle(s, Object.keys(CARDS).filter(k => k !== 'start' && k !== 'filler' && !CARDS[k].seal));
@@ -604,6 +627,16 @@ function resolveStorm(s){
     pv.wards--; pv.lastWard = { storm:s.storms + 1, target:a.target };
     warded = a.target; wardRoom = s.pos[a.target]; wardWitch = id;
   }
+  // 0-1. 封印結界：那次雷雨，這間封印房不會被任何東西熄滅（怪物、魔人、雷雨的風都不行）
+  let sealWardRoom = null;
+  for (const [id, a] of Object.entries(acts)){
+    if (roleOf(s, id) !== 'witch' || a.kind !== 'sealWard' || !a.target) continue;
+    const pv = s.priv[id];
+    if (pv.sealWards <= 0) continue;
+    pv.sealWards--;
+    sealWardRoom = a.target;
+    note(s, id, `你在「${roomName(s, a.target)}」張開了封印結界，這次雷雨它不會熄滅。`);
+  }
   const blocked = (monsterId) => {
     wardHit = true;
     note(s, monsterId, '一道看不見的結界擋住了你。');
@@ -631,14 +664,14 @@ function resolveStorm(s){
     if (a.kind === 'snuff' && a.target && s.map[a.target]){
       const c = s.map[a.target];
       const reachable = trapped ? a.target === myRoom : !s.locks[a.target];
-      if (c.lit && reachable && a.target === wardRoom){ blocked(id); acted = true; }
+      if (c.lit && reachable && (a.target === wardRoom || a.target === sealWardRoom)){ blocked(id); acted = true; }
       else if (c.lit && reachable && !sealLocked(s, a.target)){
         c.lit = false; c.wet = true; delete s.fakes[a.target];
         dark.push(a.target); acted = true;
         darkEvents(s, a.target, id);
         if (frenzy){
           // 狂暴：連相鄰的一盞燈一起撲滅
-          const near = adj(a.target).filter(k => s.map[k] && s.map[k].lit && !s.locks[k] && !sealLocked(s, k) && k !== '0,0' && k !== wardRoom);
+          const near = adj(a.target).filter(k => s.map[k] && s.map[k].lit && !s.locks[k] && !sealLocked(s, k) && k !== '0,0' && k !== wardRoom && k !== sealWardRoom);
           if (near.length){ const k = pick(s, near); s.map[k].lit = false; s.map[k].wet = true; delete s.fakes[k]; dark.push(k); darkEvents(s, k, id); }
         }
       } else note(s, id, trapped ? '你被鎖在房間裡，碰不到那盞燈。' : `「${roomName(s, a.target)}」被鎖上了，或已經暗了，你沒能得手。`);
@@ -697,7 +730,7 @@ function resolveStorm(s){
   if (wardHit) log(s, '雷雨中，有一道結界擋下了什麼。', 'night');
 
   // 3. 雷雨的風吹熄一盞真的燈；無身份模式再多熄一盞（代替怪物）
-  const blowable = () => Object.keys(s.map).filter(k => s.map[k].lit && !s.fakes[k] && !s.locks[k] && !sealLocked(s, k) && k !== '0,0');
+  const blowable = () => Object.keys(s.map).filter(k => s.map[k].lit && !s.fakes[k] && !s.locks[k] && !sealLocked(s, k) && k !== '0,0' && k !== sealWardRoom);
   let b = blowable();
   if (b.length){ const k = pick(s, b); s.map[k].lit = false; dark.push(k); }
   if (s.mode === 'coop'){ b = blowable(); if (b.length){ const k = pick(s, b); s.map[k].lit = false; s.map[k].wet = true; dark.push(k); } }
@@ -760,11 +793,25 @@ function startBattle(s){
   const lead = s.mode === 'roles' ? (s.seats.map(p => p.id).find(id => roleOf(s, id) === 'monster') || null) : null;
   const stolen = Object.values(s.monster).reduce((a, m) => a + m.stolen, 0);
   const dealt = Object.values(s.monster).reduce((a, m) => a + (m.dealt || 0), 0);
-  const hp = Math.max(20, RULES.bossHp + stolen * RULES.bossHpPerCandle + Math.max(0, humans.length - 3) * RULES.bossHpPerExtra - dealt);
+  // 怪物陣營撿到的裝備和火柴，會讓深淵的怪物更強
+  const sideGear = sideIds.flatMap(id => s.stats[id].gear);
+  const sideMatches = sideIds.reduce((a, id) => a + (s.status[id].matches || 0), 0);
+  const gearHp = sideGear.length * RULES.bossHpPerGear + sideMatches * RULES.bossHpPerMatch;
+  const bossDef = sideGear.filter(g => g === 'armor' || g === 'own').length;
+  const bossDmg = sideGear.filter(g => g === 'weapon' || g === 'own').length;
+  const hp = Math.max(20, RULES.bossHp + stolen * RULES.bossHpPerCandle + Math.min(sideIds.length > 1 ? RULES.bossHpExtraCap : Infinity, Math.max(0, humans.length - 3) * RULES.bossHpPerExtra) - dealt + gearHp);
   s.battle = {
     round:1, bossHp:hp, bossMax:hp, cd:{ sweep:0, whisper:0 }, acts:{}, rec,
     controller: lead, humans, minions: sideIds.filter(id => id !== lead), down:{}, mad:{}, lastDef:null, stolen,
+    skills:{}, bossDef, bossDmg,
   };
+  humans.forEach(id => {
+    const sk = {};
+    Object.entries(SKILLS).forEach(([k, S]) => { if (!S.gear) return; const n = s.stats[id].gear.filter(g => g === S.gear).length * S.perItem; if (n) sk[k] = n; });
+    // 巫師：雷雨時沒用完的守護結界與封印結界，變成決戰的束縛次數
+    if (roleOf(s, id) === 'witch'){ const n = (s.priv[id].wards || 0) + (s.priv[id].sealWards || 0); if (n) sk.bind = n; }
+    s.battle.skills[id] = sk;
+  });
   humans.forEach(id => {
     const st = s.stats[id], g = gearTotal(s, id);
     st.maxHp = RULES.baseHp + rec * 2;
@@ -776,6 +823,12 @@ function startBattle(s){
   log(s, `封印在深淵、沒有理智的怪物現身了。HP ${hp}${stolen ? `（被偷走的 ${stolen} 個燭台讓牠更強了）` : ''}${dealt ? `（在屋內受的 ${dealt} 點傷讓牠虛弱了一些）` : ''}。`, 'reveal');
   log(s, '身份揭曉：' + s.seats.map(p => `${p.name}是${ROLE_INFO[roleOf(s, p.id)].name}`).join('、') + '。', 'reveal');
   if (lead) log(s, `${nameOf(s, lead)} 操控著怪物。`);
+  if (sideGear.length || sideMatches){
+    const parts = [];
+    if (sideGear.length) parts.push(`${sideGear.length} 件裝備（${[...new Set(sideGear.map(g => GEAR[g].name))].join('、')}）`);
+    if (sideMatches) parts.push(`${sideMatches} 根火柴`);
+    log(s, `怪物陣營帶來的 ${parts.join('和')}被深淵吞了下去：怪物 HP +${gearHp}${bossDef ? `、防禦 +${bossDef}` : ''}${bossDmg ? `、攻擊傷害 +${bossDmg}` : ''}。`, 'reveal');
+  }
   if (rec) log(s, `點亮的房間讓大家恢復了力量（恢復等級 ${rec}）：HP 上限 +${rec * 2}，命中 +${rec}。`);
   // 見到怪物的理智檢定：原版 SAN 1D3/1D20
   humans.forEach(id => {
@@ -801,9 +854,16 @@ function livingHumans(s){ const b = s.battle; return b.humans.filter(id => !b.do
 function resolveBattle(s){
   const b = s.battle;
   const rec = b.rec;
-  const def = d(s, 10) + RULES.bossDefBase;
+  const rawDef = d(s, 10) + RULES.bossDefBase + (b.bossDef || 0);
+  // 火柴：照亮怪物的弱點，這回合大家的攻擊更容易命中（每根 -2，最多 -4）
+  const matchUsers = b.humans.filter(id => !b.down[id] && !b.mad[id] && b.acts[id] && b.acts[id].act === 'match' && s.status[id].matches > 0);
+  const defDown = Math.min(4, matchUsers.length * 2);
+  const def = Math.max(5, rawDef - defDown);
   b.lastDef = def;
-  log(s, `── 第 ${b.round} 回合，怪物的防禦 1D10+${RULES.bossDefBase}＝${def} ──`, 'battle');
+  log(s, `── 第 ${b.round} 回合，怪物的防禦 1D10+${RULES.bossDefBase + (b.bossDef || 0)}＝${rawDef}${defDown ? `，火光照出弱點 -${defDown}＝${def}` : ''} ──`, 'battle');
+  // 築起防線：這回合隊友受到的傷害 -2
+  const coverBy = b.humans.find(id => !b.down[id] && !b.mad[id] && b.acts[id] && b.acts[id].act === 'cover' && (b.skills[id] || {}).cover > 0);
+  const coverBonus = coverBy ? 2 : 0;
 
   // 守護：被守護的人受到攻擊時改由守護者承受，守護者護甲 +2
   const guardOf = {};
@@ -815,7 +875,7 @@ function resolveBattle(s){
   const damageHuman = (target, dmg, src) => {
     let who = target, bonus = 0;
     if (guardOf[target]){ who = guardOf[target]; bonus = 2; }
-    const real = Math.max(0, dmg - armorOf(who) - bonus);
+    const real = Math.max(0, dmg - armorOf(who) - bonus - coverBonus);
     s.stats[who].hp -= real;
     log(s, `${src}${who !== target ? `，${nameOf(s,who)} 擋在 ${nameOf(s,target)} 前面` : ''}，${nameOf(s,who)} 受到 ${real} 點傷害。`, 'battle');
   };
@@ -848,6 +908,39 @@ function resolveBattle(s){
         b.bossHp -= dmg;
         log(s, `${nm} 把燭台擲向怪物，火光炸開！2D6${RULES.fireBonus ? '+' + RULES.fireBonus : ''}＝${dmg} 點傷害。`, 'battle');
       } else log(s, `${nm} 想用燭火，卻發現手上沒有燭台。`, 'battle');
+    } else if (a.act === 'match'){
+      if (s.status[id].matches > 0){
+        s.status[id].matches--;
+        const dmg = d(s, 6);
+        b.bossHp -= dmg;
+        log(s, `${nm} 劃亮火柴丟向怪物，火光照出牠的弱點！燒傷 1D6＝${dmg} 點。`, 'battle');
+      } else log(s, `${nm} 摸了摸口袋，火柴已經用完了。`, 'battle');
+    } else if (a.act === 'smash' && (b.skills[id] || {}).smash > 0){
+      b.skills[id].smash--;
+      const r = d(s, 20), bonus = g.atk + rec, total = r + bonus;
+      const rollTxt = `1D20＝${r}${bonus ? `+${bonus}＝${total}` : ''}`;
+      if (r === 20 || total >= def){
+        const dmg = dn(s, 2, 6) + g.dmg + (r === 20 ? d(s, 6) : 0);
+        b.bossHp -= dmg;
+        log(s, `${nm} 重擊：${rollTxt}，${r === 20 ? '大成功！' : '命中，'}造成 ${dmg} 點傷害。`, 'battle');
+      } else log(s, `${nm} 重擊：${rollTxt}，被怪物躲開了。`, 'battle');
+    } else if (a.act === 'cover' && (b.skills[id] || {}).cover > 0){
+      b.skills[id].cover--;
+      log(s, `${nm} 築起防線，這回合大家受到的傷害 -2。`, 'battle');
+    } else if (a.act === 'soothe' && (b.skills[id] || {}).soothe > 0){
+      b.skills[id].soothe--;
+      log(s, `${nm} 握著熟悉的飾品，輕聲安撫大家。`, 'battle');
+      livingHumans(s).forEach(t => {
+        const n = d(s, 10), st = s.stats[t];
+        st.san = Math.min(st.maxSan, st.san + n);
+        if (b.mad[t] && st.san > 0){ b.mad[t] = false; log(s, `${nameOf(s,t)} 清醒過來了（理智 +${n}）。`, 'battle'); }
+        else log(s, `${nameOf(s,t)} 理智 +${n}。`, 'battle');
+      });
+    } else if (a.act === 'ultimate' && (b.skills[id] || {}).ultimate > 0){
+      b.skills[id].ultimate--;
+      const dmg = dn(s, 3, 6);
+      b.bossHp -= dmg;
+      log(s, `${nm} 找回了原本的力量，一擊命中！3D6＝${dmg} 點傷害。`, 'battle');
     } else if (a.act === 'calm'){
       const n = d(s, 10), st = s.stats[id];
       st.san = Math.min(st.maxSan, st.san + n);
@@ -857,20 +950,26 @@ function resolveBattle(s){
     }
   }
 
+  // 巫師的結界束縛：這回合怪物選的招式失效
+  const binder = b.humans.find(id => !b.down[id] && !b.mad[id] && b.acts[id] && b.acts[id].act === 'bind' && (b.skills[id] || {}).bind > 0);
+  if (binder){
+    b.skills[binder].bind--;
+    log(s, `${nameOf(s, binder)} 張開最後的結界，纏住了怪物！牠這回合動彈不得。`, 'battle');
+  }
   // 怪物行動（操控的玩家沒選，或選了冷卻中的招式，就交給程式）
-  if (b.bossHp > 0){
+  if (b.bossHp > 0 && !binder){
     const targets = livingHumans(s);
     let a = b.controller ? b.acts[b.controller] : null;
     if (!a || (a.act === 'sweep' && b.cd.sweep) || (a.act === 'whisper' && b.cd.whisper)) a = aiBoss(s);
     if (a.act === 'bite' && (!a.target || b.down[a.target])) a = { act:'bite', target: pick(s, targets) };
     if (a.act === 'bite' && targets.length){
       const t = a.target, r = d(s, 20) + 4, need = 10 + armorOf(guardOf[t] || t);
-      if (r >= need) damageHuman(t, dn(s, RULES.bossBite, 6), `怪物撕咬 ${nameOf(s,t)}（1D20+4＝${r}）`);
+      if (r >= need) damageHuman(t, dn(s, RULES.bossBite, 6) + (b.bossDmg || 0), `怪物撕咬 ${nameOf(s,t)}（1D20+4＝${r}）`);
       else log(s, `怪物撲向 ${nameOf(s,t)}（1D20+4＝${r}），被躲開了。`, 'battle');
     } else if (a.act === 'sweep'){
       log(s, '怪物橫掃整個中庭！', 'battle');
       targets.forEach(t => {
-        const dmg = Math.max(0, d(s, 6) + RULES.sweepBonus - armorOf(t));
+        const dmg = Math.max(0, d(s, 6) + RULES.sweepBonus - armorOf(t) - coverBonus);
         s.stats[t].hp -= dmg;
         log(s, `${nameOf(s,t)} 受到 ${dmg} 點傷害。`, 'battle');
       });
@@ -891,12 +990,12 @@ function resolveBattle(s){
   for (let i = 0; i < RULES.bossTail && b.bossHp > 0; i++){
     const targets = livingHumans(s); if (!targets.length) break;
     const t = pick(s, targets), r = d(s, 20) + 2;
-    if (r >= 10 + armorOf(guardOf[t] || t)) damageHuman(t, d(s, 6), `怪物甩尾掃向 ${nameOf(s,t)}（1D20+2＝${r}）`);
+    if (r >= 10 + armorOf(guardOf[t] || t)) damageHuman(t, d(s, 6) + (b.bossDmg || 0), `怪物甩尾掃向 ${nameOf(s,t)}（1D20+2＝${r}）`);
     else log(s, `怪物甩尾掃向 ${nameOf(s,t)}，被躲開了。`, 'battle');
   }
 
-  // 爪牙（第二隻怪物、魔人）
-  for (const id of b.minions){
+  // 爪牙（第二隻怪物、魔人）：每 minionEvery 回合才出手一次
+  for (const id of (b.round % RULES.minionEvery === 0 ? b.minions : [])){
     const targets = livingHumans(s); if (!targets.length) break;
     const a = b.acts[id] || { act:'claw' };
     const t = a.target && !b.down[a.target] ? a.target : pick(s, targets);
@@ -1042,8 +1141,7 @@ function reduce(s, a){
       if (!a.target || !(a.target === here || isAdj(here, a.target))) return '只能點亮所在房間或相鄰的一格';
       const c = s.map[a.target];
       if (c && c.lit) return '那裡已經亮著了';
-      const cost = c && c.wet ? RULES.wetCost : 1;
-      const e = dayCheck(s, a, cost); if (e) return e;
+      const e = dayCheck(s, a, 1); if (e) return e;
       const st = s.status[a.seat];
       let source;
       if (roleOf(s, a.seat) === 'monster') source = 'fake';
@@ -1051,10 +1149,18 @@ function reduce(s, a){
       else if (st.matches > 0) source = 'match';
       else return '你沒有燭台，也沒有火柴';
       if (source === 'match') st.matches--;
+      if (c && c.wet){
+        // 第一次：只烘乾燈芯，房間還是暗的；下一次（誰點都可以）才會亮
+        c.wet = false;
+        s.ap -= 1;
+        log(s, `${nameOf(s,a.seat)} ${source === 'match' ? '劃了一根火柴，' : ''}烘乾了「${roomName(s,a.target)}」受潮的燈芯，再點一次就會亮。`);
+        afterAp(s);
+        return null;
+      }
       if (!c) s.map[a.target] = { card:null, lit:true, explored:false };
       else { c.lit = true; c.wet = false; }
       if (source === 'fake') s.fakes[a.target] = true; else delete s.fakes[a.target];
-      s.ap -= cost;
+      s.ap -= 1;
       updateMaxLit(s);
       log(s, `${nameOf(s,a.seat)} ${source === 'match' ? '劃了一根火柴，' : ''}點亮了${c && c.explored ? `「${roomName(s,a.target)}」` : '一格黑暗'}。`);
       afterAp(s);
@@ -1077,8 +1183,10 @@ function reduce(s, a){
     case 'search': {
       const e = dayCheck(s, a); if (e) return e;
       const k = s.pos[a.seat], c = s.map[k];
-      if (s.searched[k]) return '這個房間這段時間已經有人搜過了';
-      s.searched[k] = true; s.ap--;
+      s.searchCount = s.searchCount || {};
+      if ((s.searchCount[k] || 0) >= RULES.searchLimit) return '這間已經被翻遍了，去別的房間看看吧';
+      if (s.searched[k]) return '這個房間要等下次雷雨過後才能再搜';
+      s.searched[k] = true; s.searchCount[k] = (s.searchCount[k] || 0) + 1; s.ap--;
       const C = CARDS[c.card];
       if (!c.lit){
         const r = d(s, 6), ev = darkSearchTable(s)[r - 1];
@@ -1159,13 +1267,19 @@ function reduce(s, a){
       const r = roleOf(s, a.seat);
       let kind = a.kind || 'none';
       if (s.status[a.seat].cursed || s.status[a.seat].stunned || r === 'human') kind = 'none';
-      if (r === 'witch' && kind === 'ward'){
+      if (r === 'witch' && kind === 'sealWard'){
+        const pv = s.priv[a.seat];
+        if (pv.sealWards <= 0) return '封印結界已經用過了';
+        const c = s.map[a.target];
+        if (!c || !c.explored || !CARDS[c.card].seal) return '只能守護封印房';
+        if (sealLocked(s, a.target)) return '這道封印已經解開了，不需要守護';
+      } else if (r === 'witch' && kind === 'ward'){
         const pv = s.priv[a.seat];
         if (pv.wards <= 0) return '守護結界的次數用完了';
         if (!a.target || a.target === a.seat || !s.roles[a.target]) return '請選一位其他玩家';
         if (pv.lastWard && pv.lastWard.storm === s.storms && pv.lastWard.target === a.target) return '不能連續兩次雷雨守護同一個人';
       } else if (r === 'witch' && kind !== 'none'){
-        if (kind !== 'eye') return '巫師只能看見真實或守護';
+        if (kind !== 'eye') return '巫師只能看見真實、守護人或守護封印房';
         if (!s.priv[a.seat].candle) return '你沒有燭台，看不見真實';
         if (s.priv[a.seat].eyeUsed) return '你已經用過這個能力了';
         if (!a.target || a.target === a.seat || !s.roles[a.target]) return '請選一位其他玩家';
@@ -1189,8 +1303,10 @@ function reduce(s, a){
       if (b.acts[a.seat]) return '這回合你已經行動過了';
       const act = a.act;
       if (b.humans.includes(a.seat)){
-        if (!['attack','guard','fire','calm'].includes(act)) return '不支援這個行動';
+        if (!['attack','guard','fire','calm','match','smash','cover','soothe','ultimate','bind'].includes(act)) return '不支援這個行動';
         if (act === 'fire' && !s.priv[a.seat].candle) return '你沒有燭台';
+        if (act === 'match' && !(s.status[a.seat].matches > 0)) return '你沒有火柴';
+        if (SKILLS[act] && !((b.skills[a.seat] || {})[act] > 0)) return '這個技能沒有次數了';
         if (act === 'guard' && (!a.target || a.target === a.seat || !b.humans.includes(a.target) || b.down[a.target])) return '請選一位還站著的隊友';
       } else if (a.seat === b.controller){
         if (!['bite','sweep','whisper'].includes(act)) return '不支援這個行動';
@@ -1262,7 +1378,7 @@ function viewFor(s, viewer){
     const role = roleOf(s, viewer), pv = s.priv[viewer];
     const side = isMonsterSide(s, viewer);
     v.me = {
-      id: viewer, role, candle: pv.candle, eyeUsed: pv.eyeUsed, wards: pv.wards || 0, lastWard: pv.lastWard || null,
+      id: viewer, role, candle: pv.candle, eyeUsed: pv.eyeUsed, wards: pv.wards || 0, lastWard: pv.lastWard || null, sealWards: pv.sealWards || 0,
       checks: pv.checks.slice(), notes: pv.notes.slice(),
       allies: side ? s.seats.map(p => p.id).filter(id => id !== viewer && isMonsterSide(s, id)) : [],
       monster: s.monster[viewer] ? { ...s.monster[viewer] } : null,
@@ -1293,7 +1409,7 @@ function toPlurkChunks(lines, title, limit = RULES.plurkLimit){
 }
 
 const LampEngine = {
-  RULES, SPEEDS, DIRS, CARDS, SEALS, GEAR, ROLE_INFO, ROLE_CARDS,
+  RULES, SPEEDS, DIRS, CARDS, SEALS, GEAR, ROLE_INFO, ROLE_CARDS, SKILLS,
   createGame, applyAction, viewFor, remapSeats, ENDINGS, RECOVERY_TEXT,
   adj, isAdj, step, cur, nameOf, roomName, sealStatus, litCount, darkRoomCount, gearTotal, recovery, snuffTargets,
   toPlurkChunks,
