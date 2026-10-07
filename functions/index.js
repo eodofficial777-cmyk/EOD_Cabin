@@ -13,6 +13,7 @@
    為了省流量：紀錄不會每次整包重送，私人畫面也只送「自己的那一份」。
    ========================================================= */
 const { onValueCreated } = require('firebase-functions/v2/database');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { setGlobalOptions } = require('firebase-functions/v2');
 const { defineSecret } = require('firebase-functions/params');
 const { initializeApp } = require('firebase-admin/app');
@@ -31,7 +32,7 @@ initializeApp();
 setGlobalOptions({ region: REGION, maxInstances: 10 });
 
 // 前端能送的遊戲動作（白名單）
-const ALLOWED = new Set(['ready', 'move', 'explore', 'light', 'search', 'lock', 'endTurn', 'stormAction', 'battleAction', 'timeout']);
+const ALLOWED = new Set(['ready', 'move', 'explore', 'light', 'search', 'lock', 'endTurn', 'stormAction', 'battleAction', 'timeout', 'force', 'pause', 'resume', 'attack']);
 
 exports.onIntent = onValueCreated({ ref: '/rooms/{code}/intents/{id}', region: REGION, secrets: [SAVE_KEY] }, async (event) => {
   const { code } = event.params;
@@ -44,7 +45,21 @@ exports.onIntent = onValueCreated({ ref: '/rooms/{code}/intents/{id}', region: R
   try {
     if (type === 'start' || type === 'again') return await startGame(code, uid, type);
     if (type === 'load') return await loadGame(code, uid, String(intent.action.blob || ''));
+    if (type === 'autopause' || type === 'autoresume'){
+      // 線上人數不足時自動暫停（限時模式），避免只剩一個人開著網頁時，倒數一直把大家的回合跳掉
+      const room = (await getDatabase().ref(`rooms/${code}`).get()).val() || {};
+      const seats = room.seats || {}, presence = room.presence || {};
+      if (!seats[uid]) return;
+      const online = Object.keys(presence).filter(u => seats[u]).length;
+      if (type === 'autopause' && online >= 2) return;
+      if (type === 'autoresume' && online < 2) return;
+      return await applyIntent(code, uid, { type: type === 'autopause' ? 'pause' : 'resume', auto: true }, uid);
+    }
     if (!ALLOWED.has(type)) return await reportError(code, uid, '不支援這個動作');
+    if (type === 'force' || type === 'pause' || type === 'resume'){
+      const host = (await getDatabase().ref(`rooms/${code}/meta/host`).get()).val();
+      if (host !== uid) return await reportError(code, uid, type === 'force' ? '只有房主可以推進' : '只有房主可以暫停或繼續');
+    }
     // 一人多角：可以用副角色（uid_alt）的身份行動
     const as = typeof intent.as === 'string' && (intent.as === uid || intent.as === uid + '_alt') ? intent.as : uid;
     await applyIntent(code, uid, sanitize(intent.action), as);
@@ -127,7 +142,7 @@ async function applyIntent(code, uid, action, as) {
     return out.core;
   });
   if (error) {
-    if (action.type !== 'timeout') await reportError(code, uid, error); // 超時被拒很正常，不用吵
+    if (action.type !== 'timeout' && !action.auto) await reportError(code, uid, error); // 超時或自動暫停被拒很正常，不用吵
     return;
   }
   if (!result.committed || !out) return;
@@ -139,6 +154,7 @@ async function applyIntent(code, uid, action, as) {
 async function afterCommit(code, core) {
   const updates = {};
   updates[`rooms/${code}/meta/status`] = core.phase === 'over' ? 'over' : 'playing';
+  updates[`roomIndex/${code}`] = Date.now();
   updates[`rooms/${code}/save`] = encrypt({ v: 1, code, savedAt: Date.now(), state: core.state });
   await getDatabase().ref().update(updates);
 }
@@ -169,10 +185,12 @@ async function startGame(code, uid, type) {
     if (mains < need) return reportError(code, uid, `副角色太多了：有身份模式至少要 ${need} 位主角色，現在只有 ${mains} 位`);
   }
 
-  const speed = E.SPEEDS[meta.preset] ? meta.preset : 'standard';
+  const speed = E.SPEEDS[meta.preset] ? meta.preset : 'untimed';
   const seed = Math.floor(Math.random() * 2147483647);
   const s = E.createGame({ seats, seed, speed, mode, now: Date.now() });
-  await installGame(code, uid, s, type === 'again');
+  // 之前玩過一局（再玩一局，或回到大廳後重新開始）就清掉上一局的劇情聊天
+  const hadGame = (await db.ref(`game/${code}/core/phase`).get()).exists();
+  await installGame(code, uid, s, type === 'again' || hadGame);
 }
 
 // 把一局新遊戲（或讀回來的存檔）放進房間
@@ -291,6 +309,41 @@ async function reclaim(code, newUid, name, pin) {
   await writeLogs(code, out.logs);
   await afterCommit(code, out.core);
 }
+
+// ---------- 定期清理 ----------
+// 聊天訊息：超過 CHAT_TTL_HOURS 小時自動刪除（大廳聊天、劇情 RP、玩家討論、觀眾席、狼人頻道都算）
+// 整個房間：超過 ROOM_TTL_DAYS 天沒有任何動靜就整間刪掉（設成 0 代表不刪房間）
+const CHAT_TTL_HOURS = 168;   // 7 天
+const ROOM_TTL_DAYS = 0;      // 0 ＝ 房間不刪
+
+exports.cleanup = onSchedule({ schedule: 'every 6 hours', timeZone: 'Asia/Taipei', region: REGION }, async () => {
+  const db = getDatabase();
+  const now = Date.now();
+  const chatCutoff = now - CHAT_TTL_HOURS * 3600 * 1000;
+  const roomCutoff = ROOM_TTL_DAYS > 0 ? now - ROOM_TTL_DAYS * 86400 * 1000 : 0;
+  const index = (await db.ref('roomIndex').get()).val() || {};
+  let deletedMsgs = 0, deletedRooms = 0;
+  for (const [code, lastActive] of Object.entries(index)){
+    // 整間房太久沒動靜：連同遊戲資料一起刪
+    if (roomCutoff && (Number(lastActive) || 0) < roomCutoff){
+      const updates = {};
+      updates[`rooms/${code}`] = null;
+      updates[`game/${code}`] = null;
+      updates[`roomIndex/${code}`] = null;
+      await db.ref().update(updates);
+      deletedRooms++;
+      continue;
+    }
+    // 只刪過期的聊天訊息（用 ts 查詢，不會下載整間房的資料）
+    const updates = {};
+    for (const path of [`rooms/${code}/chat/ooc`, `rooms/${code}/chat/ic`, `rooms/${code}/chat/spec`, `rooms/${code}/wolf`]){
+      const old = await db.ref(path).orderByChild('ts').endAt(chatCutoff).get();
+      old.forEach(m => { updates[`${path}/${m.key}`] = null; deletedMsgs++; });
+    }
+    if (Object.keys(updates).length) await db.ref().update(updates);
+  }
+  console.log(`cleanup: removed ${deletedMsgs} messages, ${deletedRooms} rooms`);
+});
 
 // ---------- 存檔加密（AES-256-GCM） ----------
 function keyBytes() { return crypto.createHash('sha256').update(SAVE_KEY.value()).digest(); }

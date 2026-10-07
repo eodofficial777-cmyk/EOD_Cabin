@@ -16,13 +16,23 @@ const RULES = {
   apPerTurn: 2,          // 每回合行動點
   stormEvery: 2,         // 每幾輪來一次雷雨
   // 這麼多次雷雨過後封印還沒解完，怪物獲勝。人少行動點少，所以給比較多次。
-  maxStormsFor: (n, mode) => mode === 'coop' ? ({ 3:7, 4:6, 5:4, 6:4, 7:4, 8:4 }[n] || 4) : ({ 5:9, 6:6, 7:5, 8:9 }[n] || 7),
+  maxStormsFor: (n, mode) => mode === 'coop' ? ({ 3:6, 4:5, 5:4, 6:4, 7:4, 8:4 }[n] || 4) : ({ 5:7, 6:6, 7:5, 8:9 }[n] || 7),
   sealNeed: 2,           // 每道封印需要幾間同類房間亮著（不含封印房本身）
-  sealPity: 8,           // 連續探索這麼多次都沒遇到封印房，下一次保證是封印房
+  // 人少時改成 1 間：模擬顯示人少輸掉的局，幾乎都是三間封印房都找到了、卻撐不住同類房間的燈
+  sealNeedFor: n => n <= 5 ? 1 : 2,
+  // 探索擲 1D20 達到這個數字就是封印房。人少時探索次數少，所以門檻低一點：
+  // 5 人以下 17（20%）、6 人 18（15%）、7 人以上 19（10%，原版）
+  sealRollFor: n => n <= 5 ? 17 : n === 6 ? 18 : 19,
+  // 連續這麼多次沒遇到封印房，下一次保證是封印房（人少時保底更快到）
+  sealPityFor: n => n <= 5 ? 5 : n === 6 ? 6 : 8,
   wetCost: 2,            // 被怪物熄掉的房間，燈芯受潮，重點要花的行動點
   revealSec: 45,         // 看身份卡的時間
   monsterSanity: 3,      // 怪物的理智上限；雷雨時沒作祟就 -1，歸零身份公開
   hauntFall: 11,         // 作祟巫師時擲 1D20，達到這個數字巫師墮落成魔人
+  wardUses: 2,           // 巫師的守護結界整局可以用幾次（不消耗燭台）
+  hauntFallFrenzy: 8,    // 理智崩潰（狂暴）的怪物作祟巫師時，門檻降到這個數字
+  attackDC: 12,          // 白天攻擊曝光的怪物：1D20 + 命中加成 ≥ 這個數字就命中
+  stunAt: 10,            // 怪物在屋內累積受到這麼多傷害，就會被壓制（下次雷雨不能作祟、下回合不能行動）
   beastDC: 12,           // 遭遇災獸：1D20 + 命中加成 ≥ 這個數字就擊退
   baseHp: 20,
   baseSan: 50,
@@ -47,6 +57,7 @@ const RULES = {
 
 // 房主可選的速度檔位（秒）
 const SPEEDS = {
+  untimed:  { label:'不限時',    turnSec:0,   stormSec:0,  battleSec:0, untimed:true },
   fast:     { label:'快速',      turnSec:45,  stormSec:20, battleSec:25 },
   standard: { label:'標準',      turnSec:60,  stormSec:30, battleSec:40 },
   slow:     { label:'RP 慢慢來', turnSec:120, stormSec:60, battleSec:90 },
@@ -144,6 +155,38 @@ const EVENTS = {
 };
 
 // 搜索表：在亮著的房間花 1 點行動搜索，擲 1D6。每次雷雨之間，每間房只能被搜一次。
+// 沒有燭台摸黑走進暗房時擲 1D6：危險，但也可能摸到東西
+const DARK_WALK = [
+  { t:'黑暗中被什麼東西絆倒，摔得不輕。', fx:'trip' },
+  { t:'有隻冰冷的手擦過你的脖子。', fx:'sanDown' },
+  { t:'黑暗裡有東西在呼吸，你嚇得腿軟。', fx:'skipNext' },
+  { t:'你屏住呼吸摸著牆走，什麼事也沒發生。', fx:'none' },
+  { t:'手指碰到一根掉在地上的火柴。', fx:'match' },
+  { t:'你踢到一個小盒子，摸起來是火柴。', fx:'match' },
+];
+
+// 在暗房裡摸黑搜索時擲 1D6：比亮著的房間危險，但更容易摸到燭台
+const DARK_SEARCH = [
+  { t:'你伸手進櫃子，裡面有東西咬了你一口。', fx:'bite' },
+  { t:'你摸到一張濕濕冷冷的臉。', fx:'sanDown' },
+  { t:'你撞翻了一堆東西，嚇得不敢再動。', fx:'skipNext' },
+  { t:'摸到一盒火柴。', fx:'match' },
+  { t:'翻了半天，只摸到滿手灰。', fx:'none' },
+  { t:'角落裡有一個燭台，還有點溫度。', fx:'candle' },
+];
+
+// 合作模式（沒有怪物偷燭台）沿用比較寬鬆的燭台機率；對抗模式用上面調低過的版本
+const DARK_WALK_COOP = DARK_WALK.map((e, i) => i === 5 ? { t:'你踢到一個硬硬的東西，撿起來一摸，是燭台！', fx:'candle' } : e);
+const DARK_SEARCH_COOP = DARK_SEARCH.map((e, i) => i === 4 ? { t:'抽屜裡躺著一個燭台。', fx:'candle' } : e);
+function darkWalkTable(s){ return s.mode === 'coop' ? DARK_WALK_COOP : DARK_WALK; }
+function darkSearchTable(s){ return s.mode === 'coop' ? DARK_SEARCH_COOP : DARK_SEARCH; }
+function searchTable(s, table){
+  const t = SEARCH[table];
+  if (s.mode !== 'coop') return t;
+  const extra = { common:{ 0:{ t:'抽屜裡有一個舊燭台，還能用。', fx:'candle' } }, crop:{ 5:{ t:'南瓜燈裡插著一個燭台。', fx:'candle' } } }[table] || {};
+  return t.map((e, i) => extra[i] || e);
+}
+
 // 房間被怪物熄燈時，待在裡面的人擲 1D6
 const DARK_EVENTS = [
   { t:'黑暗中有東西絆倒了你。', fx:'trip' },
@@ -156,7 +199,7 @@ const DARK_EVENTS = [
 
 const SEARCH = {
   common: [
-    { t:'抽屜裡有一個舊燭台，還能用。', fx:'candle' },
+    { t:'抽屜裡有幾根火柴。', fx:'match' },
     { t:'衣櫃裡掛著一件厚實的外套。', fx:'armor' },
     { t:'一盒乾燥的火柴。', fx:'match' },
     { t:'只有灰塵和蜘蛛網。', fx:'none' },
@@ -169,7 +212,7 @@ const SEARCH = {
     { t:'稻草人的口袋裡有火柴。', fx:'match' },
     { t:'一把生鏽的鐮刀，握起來還算順手。', fx:'weapon' },
     { t:'你咬到一顆會說話的糖，被詛咒了。', fx:'curse' },
-    { t:'南瓜燈裡插著一個燭台。', fx:'candle' },
+    { t:'南瓜燈裡的蠟燭早就燒完了。', fx:'none' },
   ],
   grave: [
     { t:'墓碑上刻著你的名字，你嚇得動彈不得。', fx:'skipNext' },
@@ -201,14 +244,18 @@ const ROLE_CARDS = {
       '鑰匙：每次雷雨之間可以鎖一間房（不能鎖自己所在的那間），鎖上後到雷雨結束前誰都不能進出（不花行動點）',
       '把可疑的人鎖在房間裡，他在雷雨時就只能對同房間出手',
       '落單時燭台可能被偷，跟隊友待在同一間比較安全',
+      '沒有燭台也能摸黑走進暗房、在暗房裡摸黑搜索：容易出事，但也比較容易摸到燭台',
+      `身份曝光的怪物跟你在同一間房時，可以攻擊牠（1 點）；累積 ${RULES.stunAt} 點傷害就能壓制牠，造成的傷害也會削弱中庭的怪物`,
     ],
   },
   witch: {
     win:  ['三道封印全部解開，並在中庭決戰打倒怪物'],
     lose: ['人類陣營所有人都失去燭台', `第 {storms} 次雷雨過後封印還沒解完`, '中庭決戰時所有人倒下或陷入瘋狂'],
     can:  [
-      '和普通人一樣可以點燈、探索、搜索、上鎖',
+      '和普通人一樣可以點燈、探索、搜索、上鎖，也能攻擊身份曝光的怪物',
       '雷雨時用燭火看見一個人的真實（整局一次，用完燭台燃盡，之後要再找燭台才能點燈）',
+      `雷雨時也可以改成張開守護結界保護一個人：他不會被偷燭台、不會被作祟，他所在的房間也不會被熄燈（整局 ${RULES.wardUses} 次，不能連續兩次守護同一人，不能守護自己）`,
+      '結界擋下作祟時，你會知道；大家只會看到「有一道結界擋下了什麼」',
       '看到的結果只有你知道，要不要說、跟誰說由你決定',
       `被怪物作祟時擲 1D20，${RULES.hauntFall} 以上會墮落成魔人，改站怪物那邊`,
     ],
@@ -222,6 +269,8 @@ const ROLE_CARDS = {
       '雷雨時三選一作祟：熄燈、偷走落單者的燭台、作祟某人',
       '作祟普通人會嚇得他下回合不能行動；作祟巫師有機會讓她墮落成魔人',
       `雷雨時沒作祟，理智 -1；理智歸零身份公開（上限 ${RULES.monsterSanity}）`,
+      '理智崩潰後陷入狂暴：熄燈會連相鄰一盞一起熄、偷燭台不用等對方落單、作祟更可怕；但大家也能在同一間房攻擊你，被壓制時下次雷雨不能作祟',
+      '你沒有鑰匙，不能鎖門',
       '被鎖在房間裡時，雷雨只能熄同一間的燈、作祟同一間的人',
       '封印解開後，在中庭決戰親自操控深淵的怪物',
     ],
@@ -279,7 +328,7 @@ const ENDINGS = {
 
 const ROLE_INFO = {
   human:   { name:'普通人', cls:'role-human',   desc:'要相信巫師，對所有人存疑。用燭台點亮房間、解開三道封印。鑰匙每次雷雨之間可以鎖一間房，怪物進不去。' },
-  witch:   { name:'巫師',   cls:'role-witch',   desc:'與普通人一起揪出潛伏在人群中的怪物。雷雨時可以用燭台的火光看見一個人的真實，但用完會失去燭台。如果被怪物作祟，可能墮落成魔人。' },
+  witch:   { name:'巫師',   cls:'role-witch',   desc:'與普通人一起揪出潛伏在人群中的怪物。雷雨時可以用燭台的火光看見一個人的真實（用完會失去燭台），或張開結界守護一個人。如果被怪物作祟，可能墮落成魔人。' },
   monster: { name:'怪物',   cls:'role-monster', desc:`你沒有燭台，但可以假裝點燈（假的燈在下次雷雨時熄滅）。雷雨時可以在黑暗中自由移動作祟：熄燈、偷走落單者的燭台，或作祟某人。太久沒作祟會失去理智、身份曝光。所有人都失去燭台，或撐過第 {storms} 次雷雨，你就贏了。封印解開後，你將親自操控中庭的怪物。` },
   fallen:  { name:'魔人',   cls:'role-monster', desc:'你被怪物作祟，墮落成魔人，現在站在怪物那一邊。雷雨時可以熄燈，中庭決戰時與怪物並肩作戰。' },
 };
@@ -308,9 +357,16 @@ function isAdj(a, b){ return adj(a).includes(b); }
 function cur(st){ return st.turnOrder[st.turnIdx]; }
 function nameOf(st, id){ const p = st.seats.find(x => x.id === id); return p ? p.name : '?'; }
 function roomName(st, key){ const c = st.map[key]; return c && c.explored ? CARDS[c.card].name : '一片黑暗'; }
-function log(s, text, kind = ''){ s.log.push({ text, kind, ts: s.now || Date.now() }); }
+function log(s, text, kind = ''){
+  s.log.push({ text, kind, ts: s.now || Date.now() });
+  if (s._ev && !s._ev.closed && kind !== 'turn') s._ev.lines.push(text);
+}
+// 事件卡：把這個動作擲的骰子和結果整理起來，讓畫面在地圖上顯示（附擲骰動畫）
+function evRoll(s, label, sides, value, bonus = 0){ if (s._ev) s._ev.rolls.push({ label, sides, value, bonus }); }
+function evClose(s){ if (s._ev) s._ev.closed = true; }
 function note(s, id, text){ if (s.priv[id]) s.priv[id].notes.push({ round:s.round, text }); }
-function setDeadline(s, sec){ s.deadline = (s.now || Date.now()) + sec * 1000; }
+// 不限時模式沒有倒數：卡住時由房主推進（force）
+function setDeadline(s, sec){ s.deadline = (s.settings && s.settings.untimed) || !sec ? null : (s.now || Date.now()) + sec * 1000; }
 function roleOf(s, id){ return s.fallen && s.fallen[id] ? 'fallen' : s.roles[id]; }
 function isMonsterSide(s, id){ const r = roleOf(s, id); return r === 'monster' || r === 'fallen'; }
 function isHumanSide(s, id){ return !isMonsterSide(s, id); }
@@ -328,7 +384,8 @@ function sealStatus(st, se){
   const key = Object.keys(st.map).find(k => st.map[k].explored && st.map[k].card === se.room);
   const tagLit = Object.keys(st.map).filter(k => k !== key && st.map[k].explored && st.map[k].lit && CARDS[st.map[k].card].tag === se.tag).length;
   const lit = !!(key && st.map[key].lit);
-  return { found:!!key, lit, tagLit, need:RULES.sealNeed, ready: lit && tagLit >= RULES.sealNeed };
+  const need = RULES.sealNeedFor(st.seats.length);
+  return { found:!!key, lit, tagLit, need, ready: lit && tagLit >= need };
 }
 
 // 怪物雷雨時能熄的燈：亮著、沒上鎖、不是已解開的封印房、不是起點
@@ -342,12 +399,12 @@ function createGame({ seats, seed, speed = 'standard', mode = 'roles', now }){
     gameId: String(seed) + ':' + (now || Date.now()), ending:null,
     now: now || Date.now(), rev:0, speed: SPEEDS[speed] ? speed : 'standard',
     settings: SPEEDS[speed] || SPEEDS.standard, mode: mode === 'coop' ? 'coop' : 'roles',
-    deadline:null, seed, rng: seed | 0,
+    deadline:null, paused:null, seed, rng: seed | 0,
     phase:'reveal', round:1, storms:0, maxStorms:0,
     seats: seats.map(x => ({ id:x.id, name:x.name, alt: !!x.alt })),
     roles:{}, fallen:{}, priv:{}, ready:{}, monster:{}, revealed:{},
     deck:[], map:{}, fakes:{}, pos:{}, stats:{}, status:{}, locks:{}, searched:{}, sealSearched:{},
-    seals:{}, sinceSeal:0, maxLit:0,
+    seals:{}, sinceSeal:0, maxLit:0, storeUsed:false,
     turnOrder:[], turnIdx:0, ap:0, stormActs:{}, lastStorm:null, battle:null,
     log:[], winner:null,
   };
@@ -357,8 +414,8 @@ function createGame({ seats, seed, speed = 'standard', mode = 'roles', now }){
   const m = s.mode === 'coop' ? 0 : RULES.monstersFor(s.seats.length);
   ids.forEach((id, i) => {
     s.roles[id] = s.mode === 'coop' ? 'human' : i < m ? 'monster' : i === m ? 'witch' : 'human';
-    s.priv[id] = { candle: s.roles[id] !== 'monster', checks:[], eyeUsed:false, notes:[] };
-    if (s.roles[id] === 'monster') s.monster[id] = { sanity:RULES.monsterSanity, stolen:0 };
+    s.priv[id] = { candle: s.roles[id] !== 'monster', checks:[], eyeUsed:false, notes:[], wards: s.roles[id] === 'witch' ? RULES.wardUses : 0, lastWard:null };
+    if (s.roles[id] === 'monster') s.monster[id] = { sanity:RULES.monsterSanity, stolen:0, wounds:0, dealt:0 };
   });
   s.deck = shuffle(s, Object.keys(CARDS).filter(k => k !== 'start' && k !== 'filler' && !CARDS[k].seal));
   SEALS.forEach(se => { s.seals[se.id] = false; });
@@ -366,7 +423,7 @@ function createGame({ seats, seed, speed = 'standard', mode = 'roles', now }){
   s.seats.forEach(p => {
     s.pos[p.id] = '0,0';
     s.stats[p.id] = { hp:RULES.baseHp, maxHp:RULES.baseHp, san:RULES.baseSan, maxSan:RULES.baseSan, gear:[] };
-    s.status[p.id] = { skip:false, apMod:0, cursed:false, matches:0, lockUsed:false };
+    s.status[p.id] = { skip:false, apMod:0, cursed:false, matches:0, lockUsed:false, stunned:false };
   });
   s.maxLit = 1;
   log(s, '你們在漆黑的地下室醒來，通訊設備和武器都不見了，口袋裡只剩一副鑰匙和一張紙卡。');
@@ -453,6 +510,8 @@ function applyFx(s, seat, fx){
       else { s.priv[seat].candle = true; note(s, seat, '你找到了一個燭台！'); }
       break;
     case 'weapon': case 'armor': case 'charm': gainGear(s, seat, fx); break;
+    case 'trip': { const n = d(s, 4); log(s, `${nm} 受到 ${n} 點傷害。`); hurt(s, seat, n); break; }
+    case 'bite': { const n = Math.max(1, d(s, 6) - gearTotal(s, seat).armor); log(s, `${nm} 受到 ${n} 點傷害。`); hurt(s, seat, n); break; }
     case 'heal': { const h = d(s, 6); const S = s.stats[seat]; S.hp = Math.min(S.maxHp, S.hp + h); log(s, `${nm} 回復了 ${h} 點 HP。`); break; }
     case 'sanDown': { const n = d(s, 6); loseSan(s, seat, n); log(s, `${nm} 理智 -${n}。`); break; }
     case 'chill': {
@@ -475,14 +534,16 @@ function applyFx(s, seat, fx){
 }
 
 // 探索：走進點亮但還沒探索的一格，擲 1D20 決定是什麼
-// 1–2 災獸、3–5 特殊事件、6–18 一般房間、19–20 封印房間（原版：小於 6 災獸或特殊事件）
+// 1–2 災獸、3–5 特殊事件、其餘一般房間、達到 sealRollFor 門檻為封印房間（原版 19 以上；人少時門檻較低）
 function explore(s, seat, key){
   const nm = nameOf(s, seat);
   const r = d(s, 20);
+  evRoll(s, '探索', 20, r);
   const remaining = SEALS.filter(se => !Object.values(s.map).some(c => c.explored && c.card === se.room));
-  const pity = r < 19 && remaining.length && s.sinceSeal >= RULES.sealPity;
+  const sealAt = RULES.sealRollFor(s.seats.length);
+  const pity = r < sealAt && remaining.length && s.sinceSeal >= RULES.sealPityFor(s.seats.length);
   let card, kind;
-  if ((r >= 19 || pity) && remaining.length){ card = pick(s, remaining).room; kind = 'seal'; s.sinceSeal = 0; }
+  if ((r >= sealAt || pity) && remaining.length){ card = pick(s, remaining).room; kind = 'seal'; s.sinceSeal = 0; }
   else {
     card = s.deck.length ? s.deck.shift() : 'filler';
     kind = r <= 2 ? 'beast' : r <= 5 ? 'event' : 'room';
@@ -498,6 +559,7 @@ function explore(s, seat, key){
     const beast = BEASTS[C.table];
     const bonus = gearTotal(s, seat).atk + recovery(s);
     const roll = d(s, 20), total = roll + bonus;
+    evRoll(s, '擊退災獸', 20, roll, bonus);
     const rollTxt = `${roll}${bonus ? `+${bonus}＝${total}` : ''}`;
     if (total >= RULES.beastDC){
       log(s, `一隻${beast}撲了上來！${nm} 擲出 ${rollTxt}，把牠趕走了。`);
@@ -512,7 +574,8 @@ function explore(s, seat, key){
       }
     }
   } else if (kind === 'event'){
-    const ev = EVENTS[C.table][d(s, 6) - 1];
+    const er = d(s, 6), ev = EVENTS[C.table][er - 1];
+    evRoll(s, '特殊事件', 6, er);
     log(s, `特殊事件：${ev.t}`);
     applyFx(s, seat, ev.fx);
   }
@@ -532,6 +595,20 @@ function resolveStorm(s){
   const broken = [];
   const revealedNow = [];
 
+  // 0. 巫師的守護結界：被守護的人雷雨中不會被偷、不會被作祟，他所在的房間也不會被熄燈
+  let warded = null, wardRoom = null, wardWitch = null, wardHit = false;
+  for (const [id, a] of Object.entries(acts)){
+    if (roleOf(s, id) !== 'witch' || a.kind !== 'ward' || !a.target) continue;
+    const pv = s.priv[id];
+    if (pv.wards <= 0) continue;
+    pv.wards--; pv.lastWard = { storm:s.storms + 1, target:a.target };
+    warded = a.target; wardRoom = s.pos[a.target]; wardWitch = id;
+  }
+  const blocked = (monsterId) => {
+    wardHit = true;
+    note(s, monsterId, '一道看不見的結界擋住了你。');
+  };
+
   // 1. 巫師看見真實
   for (const [id, a] of Object.entries(acts)){
     if (roleOf(s, id) !== 'witch' || a.kind !== 'eye' || !a.target) continue;
@@ -549,14 +626,21 @@ function resolveStorm(s){
     const isMonster = roleOf(s, id) === 'monster';
     const myRoom = s.pos[id];
     const trapped = !!s.locks[myRoom];
+    const frenzy = isMonster && !!s.revealed[id];   // 理智崩潰後陷入狂暴：作祟變強
     let acted = false;
     if (a.kind === 'snuff' && a.target && s.map[a.target]){
       const c = s.map[a.target];
       const reachable = trapped ? a.target === myRoom : !s.locks[a.target];
-      if (c.lit && reachable && !sealLocked(s, a.target)){
+      if (c.lit && reachable && a.target === wardRoom){ blocked(id); acted = true; }
+      else if (c.lit && reachable && !sealLocked(s, a.target)){
         c.lit = false; c.wet = true; delete s.fakes[a.target];
         dark.push(a.target); acted = true;
         darkEvents(s, a.target, id);
+        if (frenzy){
+          // 狂暴：連相鄰的一盞燈一起撲滅
+          const near = adj(a.target).filter(k => s.map[k] && s.map[k].lit && !s.locks[k] && !sealLocked(s, k) && k !== '0,0' && k !== wardRoom);
+          if (near.length){ const k = pick(s, near); s.map[k].lit = false; s.map[k].wet = true; delete s.fakes[k]; dark.push(k); darkEvents(s, k, id); }
+        }
       } else note(s, id, trapped ? '你被鎖在房間裡，碰不到那盞燈。' : `「${roomName(s, a.target)}」被鎖上了，或已經暗了，你沒能得手。`);
     }
     if (isMonster && a.kind === 'steal' && a.target && s.priv[a.target]){
@@ -564,8 +648,9 @@ function resolveStorm(s){
       const where = s.pos[a.target];
       const alone = s.seats.filter(p => p.id !== a.target && s.pos[p.id] === where).length === 0;
       if (trapped){ note(s, id, '你被鎖在房間裡，出不去。'); acted = false; }
+      else if (a.target === warded) blocked(id);
       else if (s.locks[where]) note(s, id, `${nameOf(s,a.target)} 所在的房間上了鎖，你進不去。`);
-      else if (!alone) note(s, id, `${nameOf(s,a.target)} 身邊有人，你沒辦法下手。`);
+      else if (!alone && !frenzy) note(s, id, `${nameOf(s,a.target)} 身邊有人，你沒辦法下手。`);
       else if (!s.priv[a.target].candle) note(s, id, `${nameOf(s,a.target)} 身上沒有燭台。`);
       else {
         s.priv[a.target].candle = false;
@@ -574,13 +659,15 @@ function resolveStorm(s){
         note(s, a.target, '雷聲過後，你發現燭台不見了。');
       }
     }
-    if (isMonster && a.kind === 'haunt' && a.target && s.roles[a.target] && trapped && s.pos[a.target] !== myRoom){
+    if (isMonster && a.kind === 'haunt' && a.target === warded && !(trapped && s.pos[a.target] !== myRoom)){
+      acted = true; blocked(id);
+    } else if (isMonster && a.kind === 'haunt' && a.target && s.roles[a.target] && trapped && s.pos[a.target] !== myRoom){
       note(s, id, `你被鎖在房間裡，碰不到 ${nameOf(s, a.target)}。`);
     } else if (isMonster && a.kind === 'haunt' && a.target && s.roles[a.target]){
       acted = true;
       if (roleOf(s, a.target) === 'witch'){
         const r = d(s, 20);
-        if (r >= RULES.hauntFall){
+        if (r >= (frenzy ? RULES.hauntFallFrenzy : RULES.hauntFall)){
           s.fallen[a.target] = true;
           note(s, a.target, `怪物的低語鑽進你的腦袋（1D20＝${r}）。你墮落成了魔人，現在站在怪物那一邊。`);
           Object.keys(s.monster).forEach(mid => note(s, mid, `${nameOf(s,a.target)} 是巫師，已經墮落成魔人，成為你的同夥。`));
@@ -590,18 +677,24 @@ function resolveStorm(s){
         }
       } else {
         s.status[a.target].skip = true;
+        if (frenzy){ const n = d(s, 6); loseSan(s, a.target, n); note(s, a.target, `狂暴的怪物在你耳邊尖叫，理智 -${n}。`); }
         note(s, id, `你作祟了 ${nameOf(s,a.target)}，對方嚇得下回合不能行動。`);
         log(s, `${nameOf(s,a.target)} 在雷雨中被什麼東西嚇壞了。`);
       }
     }
     // 理智：作祟就恢復，沒作祟就流失
-    if (isMonster){
+    if (isMonster && !frenzy){
       const m = s.monster[id];
       m.sanity = acted ? Math.min(RULES.monsterSanity, m.sanity + 1) : m.sanity - 1;
       if (!acted) note(s, id, `你太久沒有作祟，理智剩下 ${Math.max(0, m.sanity)}。`);
       if (m.sanity <= 0 && !s.revealed[id]){ s.revealed[id] = true; revealedNow.push(id); }
     }
   }
+
+  if (wardWitch){
+    note(s, wardWitch, wardHit ? `你的結界保護了 ${nameOf(s, warded)}，擋下了一次作祟。` : `你守護了 ${nameOf(s, warded)}，這次雷雨沒有東西靠近。`);
+  }
+  if (wardHit) log(s, '雷雨中，有一道結界擋下了什麼。', 'night');
 
   // 3. 雷雨的風吹熄一盞真的燈；無身份模式再多熄一盞（代替怪物）
   const blowable = () => Object.keys(s.map).filter(k => s.map[k].lit && !s.fakes[k] && !s.locks[k] && !sealLocked(s, k) && k !== '0,0');
@@ -625,10 +718,10 @@ function resolveStorm(s){
   s.stormActs = {};
   s.locks = {};
   s.searched = {};
-  s.seats.forEach(p => { s.status[p.id].cursed = false; s.status[p.id].lockUsed = false; });
+  s.seats.forEach(p => { s.status[p.id].cursed = false; s.status[p.id].lockUsed = false; s.status[p.id].stunned = false; });
 
   log(s, darkNames.length ? `第 ${s.storms} 次雷雨過去。${darkNames.map(n => `「${n}」`).join('、')}暗了下來。` : `第 ${s.storms} 次雷雨過去，所有的燈都還亮著。`, 'night');
-  revealedNow.forEach(id => log(s, `${nameOf(s,id)} 失去了理智，露出了怪物的真面目！`, 'reveal'));
+  revealedNow.forEach(id => log(s, `${nameOf(s,id)} 失去了理智，露出了怪物的真面目！牠陷入狂暴，作祟變得更猛烈，但現在也能被大家攻擊了。`, 'reveal'));
   broken.forEach(id => { const se = SEALS.find(x => x.id === id); log(s, `${se.icon} ${se.name}解開了。`, 'seal-break'); });
 
   if (SEALS.every(se => s.seals[se.id])) return startBattle(s);
@@ -666,7 +759,8 @@ function startBattle(s){
   const sideIds = s.seats.filter(p => isMonsterSide(s, p.id)).map(p => p.id);
   const lead = s.mode === 'roles' ? (s.seats.map(p => p.id).find(id => roleOf(s, id) === 'monster') || null) : null;
   const stolen = Object.values(s.monster).reduce((a, m) => a + m.stolen, 0);
-  const hp = RULES.bossHp + stolen * RULES.bossHpPerCandle + Math.max(0, humans.length - 3) * RULES.bossHpPerExtra;
+  const dealt = Object.values(s.monster).reduce((a, m) => a + (m.dealt || 0), 0);
+  const hp = Math.max(20, RULES.bossHp + stolen * RULES.bossHpPerCandle + Math.max(0, humans.length - 3) * RULES.bossHpPerExtra - dealt);
   s.battle = {
     round:1, bossHp:hp, bossMax:hp, cd:{ sweep:0, whisper:0 }, acts:{}, rec,
     controller: lead, humans, minions: sideIds.filter(id => id !== lead), down:{}, mad:{}, lastDef:null, stolen,
@@ -679,7 +773,7 @@ function startBattle(s){
     st.san = Math.min(st.maxSan, st.san + g.san);
   });
   log(s, '三道封印全部解開。地面震動，有什麼東西從深淵爬了上來，出現在中庭。', 'seal-break');
-  log(s, `封印在深淵、沒有理智的怪物現身了。HP ${hp}${stolen ? `（被偷走的 ${stolen} 個燭台讓牠更強了）` : ''}。`, 'reveal');
+  log(s, `封印在深淵、沒有理智的怪物現身了。HP ${hp}${stolen ? `（被偷走的 ${stolen} 個燭台讓牠更強了）` : ''}${dealt ? `（在屋內受的 ${dealt} 點傷讓牠虛弱了一些）` : ''}。`, 'reveal');
   log(s, '身份揭曉：' + s.seats.map(p => `${p.name}是${ROLE_INFO[roleOf(s, p.id)].name}`).join('、') + '。', 'reveal');
   if (lead) log(s, `${nameOf(s, lead)} 操控著怪物。`);
   if (rec) log(s, `點亮的房間讓大家恢復了力量（恢復等級 ${rec}）：HP 上限 +${rec * 2}，命中 +${rec}。`);
@@ -894,6 +988,27 @@ function remapSeats(state, map){
 // ---------- 動作 ----------
 function reduce(s, a){
   const seated = !!s.roles[a.seat];
+  // 暫停：凍結倒數，暫停期間除了「繼續」以外的遊戲動作都不能做（聊天不受影響）
+  if (a.type === 'pause'){
+    if (!seated) return '找不到這個座位';
+    if (s.paused) return '已經暫停了';
+    if (s.phase === 'over') return '遊戲已經結束';
+    s.paused = { remaining: s.deadline ? Math.max(5000, s.deadline - s.now) : null, auto: !!a.auto };
+    s.deadline = null;
+    log(s, a.auto ? '線上的玩家不夠，遊戲自動暫停，等大家回來。' : '房主暫停了遊戲。');
+    return null;
+  }
+  if (a.type === 'resume'){
+    if (!s.paused) return '遊戲沒有暫停';
+    if (a.auto && !s.paused.auto) return '這是房主手動暫停的，要等房主按繼續';
+    const rem = s.paused.remaining;
+    const wasAuto = s.paused.auto;
+    s.paused = null;
+    s.deadline = rem ? s.now + rem : null;
+    log(s, wasAuto ? '大家回來了，遊戲繼續。' : '遊戲繼續。');
+    return null;
+  }
+  if (s.paused) return '遊戲暫停中，等房主按「繼續」';
   switch (a.type){
     case 'ready': {
       if (s.phase !== 'reveal') return '現在不是確認身份的時間';
@@ -909,9 +1024,16 @@ function reduce(s, a){
       if (!c.explored) return '那裡還沒探索過，用「探索」走進去';
       if (s.locks[s.pos[a.seat]]) return '這間房被鎖上了，雷雨結束前出不去';
       if (s.locks[a.to]) return '那間房被鎖上了，雷雨結束前進不去';
-      if (!c.lit && !s.priv[a.seat].candle && roleOf(s, a.seat) !== 'monster') return '那裡一片漆黑，沒有燭台進不去';
       s.pos[a.seat] = a.to; s.ap--;
-      log(s, `${nameOf(s,a.seat)} 走進「${roomName(s,a.to)}」。`);
+      const groping = !c.lit && !s.priv[a.seat].candle && roleOf(s, a.seat) !== 'monster';
+      log(s, `${nameOf(s,a.seat)} ${groping ? '摸黑' : ''}走進「${roomName(s,a.to)}」。`);
+      if (groping){
+        const r = d(s, 6), ev = darkWalkTable(s)[r - 1];
+        evRoll(s, '摸黑', 6, r);
+        log(s, `黑暗中擲出 ${DICE[r-1]}：${ev.t}`, 'search');
+        applyFx(s, a.seat, ev.fx);
+      }
+      evClose(s);
       afterAp(s);
       return null;
     }
@@ -948,34 +1070,43 @@ function reduce(s, a){
       s.ap--;
       explore(s, a.seat, a.to);
       updateMaxLit(s);
+      evClose(s);
       afterAp(s);
       return null;
     }
     case 'search': {
       const e = dayCheck(s, a); if (e) return e;
       const k = s.pos[a.seat], c = s.map[k];
-      if (!c.lit) return '這裡太暗了，點亮之後才能搜索';
       if (s.searched[k]) return '這個房間這段時間已經有人搜過了';
       s.searched[k] = true; s.ap--;
       const C = CARDS[c.card];
-      if (C.seal && !s.sealSearched[k]){
+      if (!c.lit){
+        const r = d(s, 6), ev = darkSearchTable(s)[r - 1];
+        evRoll(s, '摸黑搜索', 6, r);
+        log(s, `${nameOf(s,a.seat)} 在「${C.name}」摸黑搜索。擲出 ${DICE[r-1]}：${ev.t}`, 'search');
+        applyFx(s, a.seat, ev.fx);
+      } else if (C.seal && !s.sealSearched[k]){
         s.sealSearched[k] = true;
         log(s, `${nameOf(s,a.seat)} 搜索封印裝置，在底座找到了被奪走的東西。`, 'search');
         gainGear(s, a.seat, 'own');
-      } else if (c.card === 'candle_store'){
+      } else if (c.card === 'candle_store' && (!s.storeUsed || s.mode === 'coop')){
+        s.storeUsed = true;   // 燭台儲藏室只有第一次搜得到燭台
         log(s, `${nameOf(s,a.seat)} 搜索「${C.name}」，架子上還剩下能用的東西。`, 'search');
         applyFx(s, a.seat, 'candle');
       } else {
-        const r = d(s, 6), ev = SEARCH[C.table][r - 1];
+        const r = d(s, 6), ev = searchTable(s, C.table)[r - 1];
+        evRoll(s, '搜索', 6, r);
         log(s, `${nameOf(s,a.seat)} 搜索「${C.name}」。擲出 ${DICE[r-1]}：${ev.t}`, 'search');
         applyFx(s, a.seat, ev.fx);
       }
+      evClose(s);
       afterAp(s);
       return null;
     }
     case 'lock': {
       const e = dayCheck(s, a, 0); if (e) return e;
       const st = s.status[a.seat];
+      if (isMonsterSide(s, a.seat)) return '你沒有鑰匙';
       if (st.lockUsed) return '這段時間你已經用過鑰匙了';
       const c = s.map[a.target];
       if (!c || !c.explored) return '只能鎖已經探索過的房間';
@@ -984,6 +1115,36 @@ function reduce(s, a){
       s.locks[a.target] = a.seat; st.lockUsed = true;
       const inside = s.seats.filter(p => s.pos[p.id] === a.target).map(p => p.name);
       log(s, `${nameOf(s,a.seat)} 用鑰匙鎖上了「${roomName(s,a.target)}」。${inside.length ? `${inside.join('、')} 在下次雷雨結束前都出不來。` : '下次雷雨結束前誰都進不去。'}`);
+      return null;
+    }
+    case 'attack': {
+      // 攻擊身份曝光（理智崩潰）的怪物：要在同一間房
+      const e = dayCheck(s, a); if (e) return e;
+      if (isMonsterSide(s, a.seat)) return '你不會攻擊自己的同伴';
+      if (!a.target || !s.revealed[a.target]) return '只能攻擊身份已經曝光的怪物';
+      if (s.pos[a.target] !== s.pos[a.seat]) return '要跟牠在同一間房才能攻擊';
+      s.ap--;
+      const nm = nameOf(s, a.seat), mn = nameOf(s, a.target), m = s.monster[a.target];
+      const bonus = gearTotal(s, a.seat).atk + recovery(s), r = d(s, 20), total = r + bonus;
+      evRoll(s, '攻擊', 20, r, bonus);
+      const rollTxt = `1D20＝${r}${bonus ? `+${bonus}＝${total}` : ''}`;
+      if (r === 20 || total >= RULES.attackDC){
+        const dmg = d(s, 6) + gearTotal(s, a.seat).dmg;
+        m.wounds += dmg; m.dealt += dmg;
+        log(s, `${nm} 攻擊 ${mn}：${rollTxt}，命中，造成 ${dmg} 點傷害。（中庭的怪物也會因此變弱）`, 'battle');
+        if (m.wounds >= RULES.stunAt){
+          m.wounds = 0;
+          s.status[a.target].stunned = true;
+          s.status[a.target].skip = true;
+          log(s, `${mn} 被壓制在地上，下次雷雨不能作祟，下回合也不能行動。`, 'seal-break');
+        }
+      } else {
+        const back = Math.max(1, d(s, 4) - gearTotal(s, a.seat).armor);
+        log(s, `${nm} 攻擊 ${mn}：${rollTxt}，沒有命中，反被抓傷，受到 ${back} 點傷害。`, 'battle');
+        hurt(s, a.seat, back);
+      }
+      evClose(s);
+      afterAp(s);
       return null;
     }
     case 'endTurn': {
@@ -997,9 +1158,14 @@ function reduce(s, a){
       if (s.stormActs[a.seat]) return '你這次雷雨已經行動過了';
       const r = roleOf(s, a.seat);
       let kind = a.kind || 'none';
-      if (s.status[a.seat].cursed || r === 'human') kind = 'none';
-      if (r === 'witch' && kind !== 'none'){
-        if (kind !== 'eye') return '巫師只能看見真實';
+      if (s.status[a.seat].cursed || s.status[a.seat].stunned || r === 'human') kind = 'none';
+      if (r === 'witch' && kind === 'ward'){
+        const pv = s.priv[a.seat];
+        if (pv.wards <= 0) return '守護結界的次數用完了';
+        if (!a.target || a.target === a.seat || !s.roles[a.target]) return '請選一位其他玩家';
+        if (pv.lastWard && pv.lastWard.storm === s.storms && pv.lastWard.target === a.target) return '不能連續兩次雷雨守護同一個人';
+      } else if (r === 'witch' && kind !== 'none'){
+        if (kind !== 'eye') return '巫師只能看見真實或守護';
         if (!s.priv[a.seat].candle) return '你沒有燭台，看不見真實';
         if (s.priv[a.seat].eyeUsed) return '你已經用過這個能力了';
         if (!a.target || a.target === a.seat || !s.roles[a.target]) return '請選一位其他玩家';
@@ -1039,12 +1205,14 @@ function reduce(s, a){
       if (battleActors(s).every(id => b.acts[id])) resolveBattle(s);
       return null;
     }
+    case 'force':     // 房主推進：跟時間到一樣處理，但不看倒數（伺服器會先確認是房主）
     case 'timeout': {
       // 任何人都能送，但只有伺服器時間真的過了期限才會生效
       if (!seated) return '找不到這個座位';
-      if (!s.deadline || s.now < s.deadline) return '還沒到時間';
+      if (a.type === 'timeout' && (!s.deadline || s.now < s.deadline)) return '還沒到時間';
+      if (a.type === 'force' && s.phase !== 'day') log(s, '房主決定不再等待，直接進行下去。');
       if (s.phase === 'reveal'){ s.seats.forEach(p => { s.ready[p.id] = true; }); startRound(s); return null; }
-      if (s.phase === 'day'){ log(s, `${nameOf(s, cur(s))} 的時間到了。`); endTurn(s); return null; }
+      if (s.phase === 'day'){ log(s, a.type === 'force' ? `房主跳過了 ${nameOf(s, cur(s))} 的回合。` : `${nameOf(s, cur(s))} 的時間到了。`); endTurn(s); return null; }
       if (s.phase === 'storm'){
         s.seats.forEach(p => { if (!s.stormActs[p.id]) s.stormActs[p.id] = { kind:'none', target:null }; });
         resolveStorm(s);
@@ -1063,7 +1231,15 @@ function applyAction(state, action, now){
   const s = JSON.parse(JSON.stringify(state));
   s.now = now || Date.now();
   s.rev = (s.rev || 0) + 1;
+  if (['move','explore','search','attack'].includes(action.type)) s._ev = { seat: action.seat, kind: action.type, target: action.target || action.to || null, rolls:[], lines:[] };
   const error = reduce(s, action);
+  if (s._ev){
+    const ev = s._ev; delete s._ev;
+    if (!error && ev.rolls.length){
+      s.eventSeq = (s.eventSeq || 0) + 1;
+      s.lastEvent = { id:s.eventSeq, seat:ev.seat, kind:ev.kind, target:ev.target, rolls:ev.rolls, lines:ev.lines, ts:s.now };
+    }
+  }
   return error ? { error } : { state: s };
 }
 
@@ -1077,7 +1253,8 @@ function viewFor(s, viewer){
   if (v.battle){ v.battleSubmitted = Object.keys(s.battle.acts || {}); delete v.battle.acts; }
   const open = s.phase === 'battle' || s.phase === 'over';
   v.revealed = {};
-  Object.keys(s.revealed || {}).forEach(id => { v.revealed[id] = 'monster'; });
+  v.wounds = {};
+  Object.keys(s.revealed || {}).forEach(id => { v.revealed[id] = 'monster'; if (s.monster[id]) v.wounds[id] = s.monster[id].wounds || 0; });
   if (open){ v.roles = {}; s.seats.forEach(p => { v.roles[p.id] = roleOf(s, p.id); }); }
   if (s.phase !== 'over') delete v.seed;
   v.me = null;
@@ -1085,7 +1262,7 @@ function viewFor(s, viewer){
     const role = roleOf(s, viewer), pv = s.priv[viewer];
     const side = isMonsterSide(s, viewer);
     v.me = {
-      id: viewer, role, candle: pv.candle, eyeUsed: pv.eyeUsed,
+      id: viewer, role, candle: pv.candle, eyeUsed: pv.eyeUsed, wards: pv.wards || 0, lastWard: pv.lastWard || null,
       checks: pv.checks.slice(), notes: pv.notes.slice(),
       allies: side ? s.seats.map(p => p.id).filter(id => id !== viewer && isMonsterSide(s, id)) : [],
       monster: s.monster[viewer] ? { ...s.monster[viewer] } : null,

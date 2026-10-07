@@ -81,7 +81,7 @@ details .field{margin-top:8px}
 .seal{font-size:1.5rem;filter:grayscale(1);opacity:.4}
 .seal.broken{filter:none;opacity:1;text-shadow:0 0 14px var(--glow)}
 .game{display:grid;gap:16px;grid-template-columns:1fr;grid-template-areas:"map" "side" "chat"}
-.game > .mapbox{grid-area:map}.game > .side{grid-area:side}.game > .chat{grid-area:chat}
+.game > .mapcol{grid-area:map;position:relative;min-width:0}.game > .side{grid-area:side}.game > .chat{grid-area:chat}
 @media (min-width:880px){.game{grid-template-columns:minmax(0,1fr) 340px;grid-template-areas:"map side" "chat side"}}
 .mapbox{overflow:auto;max-height:62vh;border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:24px}
 @media (min-width:880px){.mapbox{max-height:56vh}}
@@ -254,6 +254,35 @@ code{background:var(--surface);padding:0 4px;border-radius:4px}
 .reclaim[open] summary{margin-bottom:8px}
 .pin{font-size:1.1rem;letter-spacing:.2em;font-family:ui-monospace,monospace}
 .tinybtn{min-height:28px;padding:0 10px;font-size:.8rem}
+.forcebox{border-top:1px dashed var(--line);padding-top:8px}
+.pausebox{border:2px dashed var(--flame);border-radius:10px;padding:10px 12px;text-align:center}
+.turnbanner{position:sticky;top:env(safe-area-inset-top,0px);z-index:6;display:flex;align-items:center;gap:12px;margin:0 0 12px;padding:10px 14px;border-radius:12px;background:var(--surface);border:2px solid var(--line);box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.turnbanner .bicon{font-size:1.6rem;line-height:1;display:flex}
+.turnbanner .btext{display:flex;flex-direction:column;flex:1;min-width:0}
+.turnbanner .btext strong{font-size:1.15rem}
+.turnbanner .btext span{font-size:.88rem;color:var(--muted)}
+.turnbanner .btimer{font-weight:700;font-size:1.1rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+.turnbanner .btimer.urgent{color:var(--monster)}
+.turnbanner.storm{border-color:var(--muted)}
+.turnbanner.mine{border-color:var(--flame);background:radial-gradient(circle at 10% 50%,var(--glow),transparent 60%),var(--surface);animation:mineglow 1.6s ease-in-out infinite alternate}
+@keyframes mineglow{from{box-shadow:0 0 0 rgba(0,0,0,0)}to{box-shadow:0 0 22px var(--glow)}}
+@media (prefers-reduced-motion:reduce){.turnbanner.mine{animation:none}}
+.btn.danger{border-color:var(--monster);color:var(--monster)}
+.evcard{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:4;width:min(360px,calc(100% - 24px));background:var(--surface);border:2px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.28);display:flex;flex-direction:column;gap:8px}
+.evcard.mine{border-color:var(--flame)}
+.evhead{display:flex;align-items:center;gap:8px}
+.evhead strong{flex:1}
+.evdice{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+.evroll{display:flex;flex-direction:column;align-items:center;gap:2px}
+.die{width:52px;height:52px;border-radius:12px;border:2px solid var(--ink);display:grid;place-items:center;font-size:1.5rem;font-weight:700;font-variant-numeric:tabular-nums;background:var(--bg)}
+.die.rolling{animation:diceshake .18s linear infinite;border-style:dashed;color:var(--muted)}
+.die.done{animation:dicepop .35s ease-out}
+.die.crit{border-color:var(--flame);color:var(--flame);box-shadow:0 0 14px var(--glow)}
+@keyframes diceshake{0%{transform:rotate(-8deg)}50%{transform:rotate(8deg)}100%{transform:rotate(-8deg)}}
+@keyframes dicepop{0%{transform:scale(.6)}70%{transform:scale(1.15)}100%{transform:scale(1)}}
+.evlines{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.9rem}
+.evlines li.hot{color:var(--monster);font-weight:700}
+@media (prefers-reduced-motion:reduce){.die.rolling,.die.done{animation:none}}
 </style>
 </head>
 <body>
@@ -297,7 +326,7 @@ const Local = {
   game:null, msgs:{ ic:[], ooc:[], wolf:[], spec:[] }, nextId:1,
   async create(name){
     app.code = genCode();
-    app.meta = { host:'p1', status:'lobby', preset:'standard', mode:'roles' };
+    app.meta = { host:'p1', status:'lobby', preset:'untimed', mode:'roles' };
     app.seats = {}; app.presence = {};
     this.nextId = 1; this.game = null; this.msgs = { ic:[], ooc:[], wolf:[], spec:[] };
     app.spectators = { [SPEC_ID]:{ name:'觀眾', joinedAt:0 } };
@@ -323,6 +352,7 @@ const Local = {
   toggleReady(){}, 
   setPreset(k){ app.meta.preset = k; this.sync(); },
   setAllowAlts(v){ app.meta.allowAlts = !!v; this.sync(); },
+  backToLobby(){ this.game = null; this.msgs.ic = []; this.msgs.wolf = []; Object.assign(ui, { seenStorm:-1, seenNotes:{}, gameId:null }); this.sync(); },
   toggleAlt(id){ const s = app.seats[id]; if (s) s.alt = !s.alt; this.sync(); },
   setAvatar(id, obj){ if (hasAv(obj)) app.avatars[id] = obj; else delete app.avatars[id]; render(); },
   setEmotes(id, obj){ if (hasAv(obj)) app.emotes[id] = obj; else delete app.emotes[id]; render(); },
@@ -403,7 +433,7 @@ const Online = {
     for (let i = 0; i < 6; i++){
       const code = genCode();
       try {
-        await set(this.r(`rooms/${code}/meta`), { host:app.authUid, status:'lobby', preset:'standard', mode:'roles', createdAt:serverTimestamp() });
+        await set(this.r(`rooms/${code}/meta`), { host:app.authUid, status:'lobby', preset:'untimed', mode:'roles', createdAt:serverTimestamp() });
         await this.join(code, name);
         return;
       } catch (e) { /* 代碼撞到了 */ }
@@ -460,7 +490,7 @@ const Online = {
     const meta = metaSnap.val();
     const seatSnap = await get(this.r(`rooms/${code}/seats/${app.authUid}`));
     if (!seatSnap.exists()){
-      if (meta.status !== 'lobby') throw '這個房間的遊戲已經開始了，可以按「觀戰」進去看';
+      if (meta.status !== 'lobby') throw meta.status === 'over' ? '這一局剛結束，等房主按「回到大廳」之後就能加入，或先按「觀戰」' : '這個房間的遊戲已經開始了，可以按「觀戰」進去看';
       if (!name) throw '請輸入角色名字';
       const seats = (await get(this.r(`rooms/${code}/seats`))).val() || {};
       if (Object.keys(seats).length >= RULES.maxPlayers) throw '玩家已經滿了，可以按「觀戰」進去看';
@@ -512,10 +542,13 @@ const Online = {
     app.uid = app.authUid;
     this.viewSub();
     sub(`game/${code}/log`, s => { app.log = listOf(s); render(); });
+    this.touch(code);
     const pres = this.r(`rooms/${code}/presence/${app.authUid}`);
     set(pres, true); onDisconnect(pres).remove();
     render();
   },
+  // 記錄房間最後活動時間：伺服器會清掉太久沒動靜的房間
+  touch(code){ this.fb.set(this.r(`roomIndex/${code || app.code}`), this.fb.serverTimestamp()).catch(() => {}); },
   // 私人畫面：跟著「目前操作的角色」（主角或副角色）訂閱
   viewSub(){
     if (this.viewUnsub){ this.viewUnsub(); this.viewUnsub = null; }
@@ -528,7 +561,31 @@ const Online = {
     try { await set(this.r(`rooms/${app.code}/seats/${app.authUid}_alt`), { name, ready:true, joinedAt:serverTimestamp(), owner:app.authUid }); }
     catch { ui.toast = '沒辦法新增副角色（房主沒開放，或遊戲已經開始）'; render(); }
   },
-  async removeAlt(){ await this.fb.remove(this.r(`rooms/${app.code}/seats/${app.authUid}_alt`)).catch(() => {}); },
+  async removeAlt(){
+    const { update } = this.fb, u = app.authUid, alt = u + '_alt';
+    const changes = { [`seats/${alt}`]:null, [`avatars/${alt}`]:null, [`emotes/${alt}`]:null };
+    await update(this.r(`rooms/${app.code}`), changes).catch(() => { ui.toast = '移除失敗：要回到大廳才能調整角色'; render(); });
+  },
+  // 主角色和副角色互換：交換名字、頭像、表符
+  async swapAlt(){
+    const { update } = this.fb, u = app.authUid, alt = u + '_alt';
+    const main = app.seats[u], sub = app.seats[alt];
+    if (!main || !sub) return;
+    const av = app.avatars || {}, em = app.emotes || {};
+    const changes = {
+      [`seats/${u}/name`]: sub.name, [`seats/${alt}/name`]: main.name,
+      [`avatars/${u}`]: av[alt] || null, [`avatars/${alt}`]: av[u] || null,
+      [`emotes/${u}`]: em[alt] || null, [`emotes/${alt}`]: em[u] || null,
+    };
+    try {
+      await update(this.r(`rooms/${app.code}`), changes);
+      // 這個瀏覽器記住的「我的名字、頭像、表符」也跟著換，下次進房才不會換回去
+      storeSet('lamp:name', sub.name);
+      storeSet('lamp:avatars', JSON.stringify(av[alt] || {}));
+      storeSet('lamp:emotes', JSON.stringify(em[alt] || {}));
+    } catch { ui.toast = '互換失敗：要回到大廳才能調整角色'; render(); }
+  },
+  backToLobby(){ this.fb.set(this.r(`rooms/${app.code}/meta/status`), 'lobby').catch(() => { ui.toast = '只有房主可以回到大廳'; render(); }); },
   setAllowAlts(v){ this.fb.set(this.r(`rooms/${app.code}/meta/allowAlts`), !!v).catch(() => { ui.toast = '只有房主能改設定'; render(); }); },
   wolfSub(){
     const v = app.view;
@@ -584,7 +641,7 @@ const Online = {
     const { push, serverTimestamp } = this.fb;
     if (ch !== 'spec' && isSpectator()) return '觀眾只能在觀眾席說話';
     const path = ch === 'wolf' ? `rooms/${app.code}/wolf` : `rooms/${app.code}/chat/${ch}`;
-    try { await push(this.r(path), { uid:app.uid, text, ts:serverTimestamp() }); return null; }
+    try { await push(this.r(path), { uid:app.uid, text, ts:serverTimestamp() }); this.touch(); return null; }
     catch { return (app.pub && app.pub.phase === 'storm' && ch !== 'wolf') ? '雷雨中，請保持安靜' : '訊息沒有送出去'; }
   },
 };
@@ -617,8 +674,16 @@ function onPub(){
     ui.seenStorm = pub.lastStorm ? pub.lastStorm.n : 0;
     ui.seenNotes = {};
     ui.exportMark = 0; ui.exportRange = 'all'; ui.lightMode = false;
+    ui.evSeen = pub.lastEvent ? pub.lastEvent.id : 0; ui.evDismissed = ui.evSeen;
   }
   if (pub.phase !== 'day') ui.lightMode = false;
+  // 新的事件：開始擲骰動畫
+  if (pub.lastEvent && pub.lastEvent.id > (ui.evSeen || 0)){
+    ui.evSeen = pub.lastEvent.id;
+    ui.evStart = Date.now();
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    ui.evStep = reduce ? 0 : Math.min(900, 2400 / Math.max(1, pub.lastEvent.rolls.length));
+  }
   // 我的回合因為行動點用完（或被跳過）而結束時，提醒一下
   const key = pub.phase === 'day' ? `${pub.round}:${pub.turnIdx}:${L.cur(pub)}` : pub.phase;
   if (ui.lastTurnKey && ui.lastTurnKey.mine && ui.lastTurnKey.key !== key && !ui.endedByMe && app.mode === 'online'){
@@ -654,13 +719,42 @@ async function sendChat(ch, text){
   render();
 }
 
+// 擲骰動畫：骰子在揭曉前一直亂跳；時間到就重繪，顯示結果
+setInterval(() => {
+  const rolling = document.querySelectorAll('.die.rolling');
+  if (!rolling.length) return;
+  const now = Date.now();
+  let due = false;
+  rolling.forEach(el => {
+    if (now >= +el.dataset.reveal) due = true;
+    else el.textContent = 1 + Math.floor(Math.random() * (+el.dataset.sides || 6));
+  });
+  if (due) render();
+}, 80);
+
+// 線上人數不足自動暫停（限時模式）：只剩一個人開著網頁時，不讓倒數一直把別人的回合跳掉
+setInterval(() => {
+  const pub = app.pub;
+  if (app.mode !== 'online' || !pub || pub.phase === 'over' || !app.seats[app.authUid] || (pub.settings && pub.settings.untimed)) return;
+  if (pub.paused && !pub.paused.auto) return;
+  const online = Object.keys(app.presence || {}).filter(u => app.seats[u]).length;
+  const want = !pub.paused && online < 2 ? 'autopause' : pub.paused && pub.paused.auto && online >= 2 ? 'autoresume' : null;
+  if (!want || Date.now() - (ui.lastAuto || 0) < 5000) return;
+  ui.lastAuto = Date.now();
+  B.send({ type:want });
+}, 1000);
+
 // 倒數：期限過後送出 timeout，由伺服器（或測試模式的本機）判斷
 setInterval(() => {
   const pub = app.pub;
-  const el = document.getElementById('timer');
-  if (!pub || !pub.deadline || pub.phase === 'over'){ if (el) el.textContent = ''; return; }
+  const els = ['timer', 'bannerTimer'].map(id => document.getElementById(id)).filter(Boolean);
+  if (!pub || !pub.deadline || pub.phase === 'over'){
+    const t = !pub || pub.phase === 'over' ? '' : pub.paused ? '暫停中' : pub.settings && pub.settings.untimed ? '不限時' : '';
+    els.forEach(el => { el.textContent = t; el.classList.remove('urgent'); });
+    return;
+  }
   const left = Math.ceil((pub.deadline - serverNow()) / 1000);
-  if (el){ el.textContent = left > 0 ? `剩 ${left} 秒` : '結算中'; el.classList.toggle('urgent', left <= 10); }
+  els.forEach(el => { el.textContent = left > 0 ? `剩 ${left} 秒` : '結算中'; el.classList.toggle('urgent', left <= 10); });
   if (serverNow() > pub.deadline + 800 && Date.now() - ui.lastTimeout > 3000 && app.seats[app.uid]){
     ui.lastTimeout = Date.now();
     B.send({ type:'timeout' });
@@ -869,7 +963,7 @@ function lobbyView(){
   const minP = RULES.minPlayersFor(app.meta.mode || 'roles');
   const canStart = host && ids.length >= minP && ids.length <= RULES.maxPlayers && allReady && mains >= needMain;
   const me = app.seats[selfId()];
-  const preset = app.meta.preset || 'standard', sp = SPEEDS[preset];
+  const preset = SPEEDS[app.meta.preset] ? app.meta.preset : 'untimed', sp = SPEEDS[preset];
   const mode = app.meta.mode || 'roles';
   const link = `${location.origin}${location.pathname}?room=${app.code}`;
   return `<main class="wrap lobby">
@@ -889,7 +983,7 @@ function lobbyView(){
         return `<li>${tok(id, 'big')}<span class="name">${esc(s.name || '?')}${isMine(id) ? '（你）' : ''}</span>
           <span class="chip ${isAlt || id === app.meta.host || s.ready || local ? 'good' : ''}">${tag}</span>
           ${local && id !== app.meta.host ? `<button class="btn quiet" data-act="toggleAltLocal" data-id="${id}">${isAlt ? '改回主角色' : '設為副角色'}</button>` : ''}
-          ${isMine(id) && isAlt ? `<button class="btn quiet" data-act="removeAlt">移除副角色</button>` : ''}
+          ${isMine(id) && isAlt ? `<button class="btn quiet" data-act="swapAlt" title="交換名字、頭像和表符">和主角色互換</button><button class="btn quiet" data-act="removeAlt">移除副角色</button>` : ''}
           ${local && id !== app.meta.host ? `<button class="btn quiet" data-act="rmSeat" data-id="${id}">移除</button>` : `<span class="dot ${on ? 'on' : ''}" title="${on ? '在線上' : '離線'}"></span>`}
           ${local || isMine(id) ? avatarPicker(id, true) + `<button class="btn quiet emobtn" data-act="emoOpen" data-for="${id}">噗浪表符${hasAv(app.emotes[id]) ? '（已設定）' : ''}</button>` : ''}</li>`;
       }).join('')}</ul>
@@ -911,7 +1005,7 @@ function lobbyView(){
         <p class="small">遊戲速度</p>
         ${host ? `<div class="choices">${Object.entries(SPEEDS).map(([k, v]) => `<button class="btn ${k === preset ? 'primary' : ''}" data-act="preset" data-k="${k}">${v.label}</button>`).join('')}</div>`
           : `<p><strong>${sp.label}</strong></p>`}
-        <p class="muted small">每回合 ${sp.turnSec} 秒，雷雨 ${sp.stormSec} 秒，決戰每回合 ${sp.battleSec} 秒。</p>
+        <p class="muted small">${sp.untimed ? '沒有倒數，大家慢慢來。有人離開或卡住時，房主可以按「推進」跳過他。' : `每回合 ${sp.turnSec} 秒，雷雨 ${sp.stormSec} 秒，決戰每回合 ${sp.battleSec} 秒。`}</p>
       </div>
       <p class="muted small">這個模式 ${minP} 到 ${RULES.maxPlayers} 人。</p>
       ${ui.toast ? `<p class="toast" role="alert">${esc(ui.toast)}</p>` : ''}
@@ -931,6 +1025,7 @@ function lobbyView(){
     ${local ? '' : `<section class="panel chat">
       <h2>大廳聊天</h2>
       <div class="feed" id="feed">${app.ooc.length ? app.ooc.map(chatItem).join('') : '<p class="sys">還沒有人說話。</p>'}</div>
+      <p class="muted small">聊天訊息會在 7 天後自動清除，想留的話記得用「存檔 → 下載紀錄」。</p>
       ${isSpectator() ? '<p class="muted small">觀眾可以看大廳聊天；遊戲開始後，觀眾有自己的觀眾席可以聊。</p>' : `<div class="compose">
         <input id="chatText" maxlength="${RULES.chatMax}" placeholder="打個招呼" value="${esc(ui.draft.ooc || '')}" data-ch="ooc">
         <button class="btn primary" data-act="say" data-ch="ooc">送出</button>
@@ -976,13 +1071,74 @@ function gameView(){
       <span class="timer" id="timer"></span>
       <div class="seals" aria-label="封印">${SEALS.map(se => `<span class="seal ${pub.seals[se.id] ? 'broken' : ''}" title="${se.name}${pub.seals[se.id] ? '已解開' : '未解開'}">${se.icon}</span>`).join('')}</div>
     </header>
+    ${turnBanner(pub)}
     ${isSpectator() ? `<div class="specbar">你正在觀戰，只看得到公開資訊。${specList()}</div>` : ''}
     <div class="game">
-      <section class="mapbox ${pub.phase === 'storm' ? 'stormy' : ''}" aria-label="地下室地圖">${pub.phase === 'battle' || (pub.phase === 'over' && pub.battle) ? battleStage(pub) : mapView(pub)}</section>
+      <div class="mapcol">${eventCard(pub)}<section class="mapbox ${pub.phase === 'storm' ? 'stormy' : ''}" aria-label="地下室地圖">${pub.phase === 'battle' || (pub.phase === 'over' && pub.battle) ? battleStage(pub) : mapView(pub)}</section></div>
       <aside class="panel side">${panelView(pub)}</aside>
       <section class="panel chat">${chatView(pub)}</section>
     </div>
   </main>${overlayView(pub)}`;
+}
+
+// 地圖上的事件卡：剛剛有人探索、搜索、摸黑、攻擊時，顯示擲骰（附動畫）和結果
+const EV_TITLE = { explore:'探索', search:'搜索', move:'摸黑前進', attack:'攻擊' };
+function eventCard(pub){
+  const ev = pub.lastEvent;
+  if (!ev || ev.id === ui.evDismissed || pub.phase === 'battle' || pub.phase === 'over') return '';
+  const now = Date.now(), step = ui.evStep || 0;
+  const start = ev.id === ui.evSeen ? (ui.evStart || 0) : 0;
+  const who = ev.seat === app.uid ? '你' : esc(nameOf(ev.seat));
+  const dice = ev.rolls.map((r, i) => {
+    const revealAt = start + step * (i + 1);
+    const rolling = now < revealAt;
+    const total = r.value + (r.bonus || 0);
+    return `<div class="evroll"><span class="small muted">${esc(r.label)}（1D${r.sides}）</span>
+      <span class="die ${rolling ? 'rolling' : 'done'} ${r.sides === 20 && r.value === 20 ? 'crit' : ''}" data-sides="${r.sides}" data-reveal="${revealAt}">${rolling ? '?' : r.value}</span>
+      ${!rolling && r.bonus ? `<span class="small">+${r.bonus}＝${total}</span>` : ''}</div>`;
+  }).join('');
+  const allDone = now >= start + step * ev.rolls.length;
+  const hot = /不能行動|受到|理智|燭台|封印|墮落|壓制|擋下|昏過去|詛咒/;
+  const lines = allDone ? `<ul class="evlines">${ev.lines.map(t => `<li class="${hot.test(t) ? 'hot' : ''}">${esc(t)}</li>`).join('')}</ul>` : '';
+  return `<div class="evcard ${ev.seat === app.uid ? 'mine' : ''}" role="status" aria-live="polite">
+    <div class="evhead">${tok(ev.seat)}<strong>${who}${EV_TITLE[ev.kind] || ''}</strong>
+      <button class="btn quiet tinybtn" data-act="evClose">知道了</button></div>
+    <div class="evdice">${dice}</div>${lines}
+  </div>`;
+}
+
+// 地圖上方的醒目提示：現在輪到誰、雷雨／決戰還在等誰、倒數
+function turnBanner(pub){
+  if (pub.phase === 'over') return '';
+  const total = pub.seats.length;
+  let cls = '', icon = '', main = '', sub = '', extra = '';
+  if (pub.paused){ icon = '⏸'; main = '遊戲暫停中'; sub = pub.paused.auto ? '線上玩家不足 2 人，自動暫停；有人回來就會繼續' : '等房主按「繼續」，聊天照常可以用'; }
+  else if (pub.phase === 'reveal'){ icon = '🃏'; main = '大家正在看自己的身份卡'; sub = `已確認 ${Object.keys(pub.ready || {}).length} / ${total}`; }
+  else if (pub.phase === 'day'){
+    const c = L.cur(pub);
+    icon = tok(c, 'big');
+    if (c === app.uid){ cls = 'mine'; main = '輪到你了！'; sub = `還有 ${pub.ap} 點行動點`; }
+    else if (isMine(c)){ cls = 'mine'; main = `輪到你的副角色 ${esc(nameOf(c))}`; extra = `<button class="btn primary" data-act="controlAs" data-id="${c}">切過去操作</button>`; }
+    else { main = `輪到 ${esc(nameOf(c))} 行動`; sub = `行動點 ${pub.ap}`; }
+    if (pub.round % RULES.stormEvery === 0) sub += `${sub ? '　' : ''}⚡ 這一輪結束後雷雨就會來`;
+  } else if (pub.phase === 'storm'){
+    cls = 'storm'; icon = '⛈';
+    const done = pub.stormSubmitted.includes(app.uid);
+    main = '雷雨中，所有人同時決定行動';
+    sub = `已決定 ${pub.stormSubmitted.length} / ${total}${app.view && app.view.me && !done ? '　你還沒決定' : ''}`;
+    if (app.view && app.view.me && !done) cls += ' mine';
+  } else if (pub.phase === 'battle'){
+    cls = 'storm'; icon = '⚔';
+    const need = pendingSeats(pub);
+    main = `中庭決戰，第 ${pub.battle.round} 回合`;
+    sub = `已選好 ${pub.battleSubmitted.length} 人${need.includes(app.uid) ? '　輪到你選行動了' : ''}`;
+    if (need.includes(app.uid)) cls += ' mine';
+  }
+  return `<div class="turnbanner ${cls}" role="status" aria-live="polite">
+    <span class="bicon">${icon}</span>
+    <div class="btext"><strong>${main}</strong>${sub ? `<span>${sub}</span>` : ''}</div>
+    ${extra}<span class="btimer" id="bannerTimer"></span>
+  </div>`;
 }
 
 // 有副角色的玩家：切換目前操作的角色，並提醒另一個角色需要行動
@@ -1143,6 +1299,17 @@ async function loadSaveFile(file){
 }
 
 // ---------- 遊戲指南 ----------
+function playerCount(){ return app.pub ? app.pub.seats.length : Object.keys(app.seats || {}).length; }
+function sealRollText(){
+  const n = playerCount();
+  if (!n) return '17–20 封印房（5 人以下；6 人 18–20；7 人以上 19–20）';
+  const t = RULES.sealRollFor(n);
+  return `${t}–20 封印房（${n} 人局）`;
+}
+function sealNeedText(){
+  const n = playerCount();
+  return n ? String(RULES.sealNeedFor(n)) : '1（5 人以下）或 2（6 人以上）';
+}
 const GUIDE_TABS = [['goal','目標'], ['flow','流程'], ['ops','操作'], ['legend','圖例與介面']];
 function guideHtml(section){
   const coop = (app.pub ? app.pub.mode : app.meta && app.meta.mode) === 'coop';
@@ -1170,7 +1337,7 @@ function guideHtml(section){
       ])}`,
     flow: `
       <h3>白天：輪流行動</h3>${ul([
-        `每個人輪流，每回合有 ${RULES.apPerTurn} 點行動點。上方有倒數，時間到會自動換下一位。`,
+        `每個人輪流，每回合有 ${RULES.apPerTurn} 點行動點。限時模式上方有倒數，時間到會自動換下一位；不限時模式沒有倒數，有人卡住時房主可以推進。`,
         '行動點用完會自動結束回合，也可以提早按「結束回合」。',
       ])}
       <h3>雷雨：每 ${RULES.stormEvery} 輪一次</h3>${ul([
@@ -1180,7 +1347,7 @@ function guideHtml(section){
         '雷雨的風會吹熄一盞燈；怪物的假燈也會在這時熄滅。',
       ])}
       <h3>雷雨過後：檢查封印</h3>${ul([
-        `封印房亮著，而且同類的房間（作物、墓園、月光）另外亮著 ${RULES.sealNeed} 間以上，那道封印就會解開。`,
+        `封印房亮著，而且同類的房間（作物、墓園、月光）另外亮著 ${sealNeedText()} 間以上，那道封印就會解開。`,
         '條件要撐過雷雨才算數，所以雷雨前要守好這些房間。',
       ])}
       <h3>中庭決戰</h3>${ul([
@@ -1191,15 +1358,17 @@ function guideHtml(section){
     ops: `
       <h3>輪到你的時候（白天）</h3>${ul([
         '<strong>點燈（1 點）</strong>：先按「點燈」進入點燈模式，再點地圖上標著「點亮」的格子。要有燭台或火柴。標著「受潮」的房間要 2 點。',
-        '<strong>探索（1 點）</strong>：點地圖上發光的「點亮的黑暗」，走進去擲 1D20：1–2 遇到災獸、3–5 特殊事件、6–18 一般房間、19–20 封印房。',
-        '<strong>移動（1 點）</strong>：點相鄰、外框是虛線的房間。暗掉的房間要有燭台才進得去。',
+        `<strong>探索（1 點）</strong>：點地圖上發光的「點亮的黑暗」，走進去擲 1D20：1–2 遇到災獸、3–5 特殊事件、${sealRollText()}，其餘是一般房間。`,
+        '<strong>移動（1 點）</strong>：點相鄰、外框是虛線的房間。沒有燭台也能摸黑走進暗房，但會擲骰遇到事件：可能受傷、被嚇到，也可能摸到火柴或燭台。',
+        '<strong>摸黑搜索（1 點）</strong>：在暗房裡也能搜索，比亮著的房間危險，但更容易摸到燭台。',
+        `<strong>攻擊（1 點）</strong>：理智崩潰、身份曝光的怪物跟你在同一間房時，可以攻擊牠。累積 ${RULES.stunAt} 點傷害就能壓制牠（下次雷雨不能作祟），造成的傷害也會讓中庭的怪物變弱。`,
         '<strong>搜索（1 點）</strong>：在亮著的房間按「搜索這間」，可能找到燭台、火柴、裝備，也可能被嚇到。每次雷雨之間，每間只能搜一次。',
-        '<strong>鑰匙（不花點數）</strong>：從選單挑一間房按「上鎖」。鎖上的房間到雷雨結束前誰都不能進出；不能鎖自己所在的那間。把可疑的人鎖起來，他雷雨時就只能對同一間出手。',
+        '<strong>鑰匙（不花點數）</strong>：從選單挑一間房按「上鎖」。鎖上的房間到雷雨結束前誰都不能進出；不能鎖自己所在的那間。只有普通人和巫師有鑰匙。把可疑的人鎖起來，他雷雨時就只能對同一間出手。',
         '<strong>結束回合</strong>：點數沒用完也可以提早結束。',
       ])}
       <h3>雷雨時</h3>${ul([
         '普通人：躲好就好，按「等雷雨過去」。',
-        '巫師：可以選一個人，用燭火看見他的真實（整局一次，燭台會燃盡）。',
+        '巫師：可以選一個人，用燭火看見他的真實（整局一次，燭台會燃盡）；或張開守護結界保護一個人，讓他這次雷雨不被偷、不被作祟、房間不被熄燈（整局 ' + RULES.wardUses + ' 次）。',
         '怪物：熄燈、偷落單者的燭台、作祟某人，三選一。',
         '小技巧：雷雨時跟隊友待在同一間，燭台比較不會被偷。',
       ])}
@@ -1241,20 +1410,25 @@ function modal(inner, kind = ''){ return `<div class="modal" role="dialog" aria-
 // ---------- 地圖 ----------
 function myTurn(pub){ return pub.phase === 'day' && L.cur(pub) === app.uid; }
 function cellAction(pub, k){
-  if (!myTurn(pub) || pub.ap <= 0 || ui.busy) return null;
+  if (!myTurn(pub) || pub.ap <= 0 || ui.busy || pub.paused) return null;
   const me = app.view && app.view.me; if (!me) return null;
   const here = pub.pos[app.uid], c = pub.map[k];
   const near = L.isAdj(here, k);
   if (ui.lightMode){
     if (!(near || k === here)) return null;
     if (!c) return k === here ? null : { act:'light', label:'點亮' };
-    if (!c.lit) return { act:'light', label: c.wet ? `點亮（${RULES.wetCost} 點）` : '點亮' };
+    if (!c.lit){
+      // 受潮的房間一次花 2 點點亮；行動點不夠就不讓點，免得按了才報錯
+      if (c.wet && pub.ap < RULES.wetCost) return null;
+      return { act:'light', label: c.wet ? `點亮（${RULES.wetCost} 點）` : '點亮' };
+    }
     return null;
   }
   if (!near || !c) return null;
+  if (pub.locks[here] || pub.locks[k]) return null;
   if (!c.explored) return c.lit ? { act:'explore', label:'探索' } : null;
-  if (c.lit || me.candle || me.role === 'monster') return { act:'move', label:'' };
-  return null;
+  const groping = !c.lit && !me.candle && me.role !== 'monster';
+  return { act:'move', label: groping ? '摸黑' : '' };
 }
 
 function mapView(pub){
@@ -1343,7 +1517,7 @@ function myBlock(pub){
   if (st.lockUsed) effects.push('這段時間已經用過鑰匙');
   rows.push(['狀態', effects.length ? effects.join('<br>') : '一切正常']);
   if (me.monster) rows.push(['怪物', `理智 ${Math.max(0, me.monster.sanity)} / ${RULES.monsterSanity}，偷到的燭台 ${me.monster.stolen} 個`]);
-  if (me.role === 'witch') rows.push(['能力', me.eyeUsed ? '已經看過真實' : (me.candle ? '雷雨時可以用燭火看見一個人的真實（一次）' : '要有燭台才能看見真實')]);
+  if (me.role === 'witch') rows.push(['能力', (me.eyeUsed ? '已經看過真實' : (me.candle ? '雷雨時可以用燭火看見一個人的真實（一次）' : '要有燭台才能看見真實')) + `<br>守護結界還剩 ${me.wards} 次`]);
   if (me.checks.length) rows.push(['看見的真實', me.checks.map(c => `${esc(nameOf(c.target))} 是${ROLE_INFO[c.role].name}`).join('、')]);
   if (me.allies.length) rows.push(['同夥', me.allies.map(id => esc(nameOf(id))).join('、')]);
   return `<div class="myrole">
@@ -1363,7 +1537,9 @@ function panelView(pub){
     const id = L.cur(pub);
     if (id === app.uid && me){
       const here = pub.pos[id], c = pub.map[here], st = pub.status[id];
-      const searchable = c.lit && !pub.searched[here];
+      const searchable = !pub.searched[here];
+      const human = !isMonsterSide(me.role);
+      const foes = human ? pub.seats.filter(p => p.id !== id && pub.revealed[p.id] && pub.pos[p.id] === here) : [];
       const lockable = Object.keys(pub.map).filter(k => pub.map[k].explored && !pub.locks[k] && k !== here);
       top = `<div class="turn">${tok(id, 'big')}<div><strong>輪到你了</strong>
           <div class="ap" aria-label="行動點 ${pub.ap}">${Array.from({ length:Math.max(pub.ap, RULES.apPerTurn) }, (_, i) => `<i class="${i < pub.ap ? 'on' : ''}"></i>`).join('')}<span class="small">剩 ${pub.ap} 點</span></div></div></div>
@@ -1371,16 +1547,18 @@ function panelView(pub){
         <p class="muted small">${ui.lightMode ? '點地圖上的格子把它點亮（1 點）。' : '點「探索」走進點亮的黑暗，點虛線框的房間移動（各 1 點）。'}</p>
         <div class="choices">
           <button class="btn ${ui.lightMode ? 'primary' : ''}" data-act="lightMode" ${Bz}>${ui.lightMode ? '取消點燈' : '點燈'}</button>
-          <button class="btn" data-act="search" ${searchable && !ui.busy ? '' : 'disabled'}>搜索這間</button>
+          <button class="btn" data-act="search" ${searchable && !ui.busy ? '' : 'disabled'}>${c.lit ? '搜索這間' : '摸黑搜索'}</button>
+          ${foes.map(f => `<button class="btn danger" data-act="attack" data-id="${f.id}" ${Bz}>攻擊 ${esc(nameOf(f.id))}</button>`).join('')}
           <button class="btn" data-act="endTurn" ${Bz}>結束回合</button>
         </div>
-        ${me.role !== 'monster' && !me.candle && !st.matches ? '<p class="small role-monster">你沒有燭台也沒有火柴，現在點不了燈。搜索房間有機會找到。</p>' : ''}
-        ${!c.lit ? '<p class="muted small">這裡太暗了，點亮之後才能搜索。</p>' : pub.searched[here] ? '<p class="muted small">這間這段時間已經被搜過了。</p>' : ''}
-        <div class="row lockrow">
+        ${me.role !== 'monster' && !me.candle && !st.matches ? '<p class="small role-monster">你沒有燭台也沒有火柴，點不了燈。可以摸黑走進暗房、摸黑搜索：比較危險，但容易摸到燭台。</p>' : ''}
+        ${pub.searched[here] ? '<p class="muted small">這間這段時間已經被搜過了。</p>' : !c.lit ? '<p class="muted small">這裡是暗的：摸黑搜索比較危險，但更容易摸到燭台。</p>' : ''}
+        ${foes.length ? `<p class="small role-monster">曝光的怪物就在這間房！攻擊命中會造成傷害，累積 ${RULES.stunAt} 點就能壓制牠；沒打中會被反擊。</p>` : ''}
+        ${!human ? '<p class="muted small">你沒有鑰匙，不能鎖門。</p>' : `<div class="row lockrow">
           <div class="field"><label for="lockTarget">鑰匙（每次雷雨之間一次）</label>
             <select id="lockTarget" ${st.lockUsed ? 'disabled' : ''}>${lockable.map(k => `<option value="${k}" ${k === here ? 'selected' : ''}>${esc(CARDS[pub.map[k].card].name)}</option>`).join('')}</select></div>
           <button class="btn" data-act="lock" ${st.lockUsed || !lockable.length || ui.busy ? 'disabled' : ''}>${st.lockUsed ? '已用過' : '上鎖'}</button>
-        </div>`;
+        </div>`}`;
     } else {
       top = `<div class="turn">${tok(id, 'big')}<div><strong>${esc(nameOf(id))} 正在行動</strong><p class="muted small">輪到你時這裡會出現操作按鈕。</p></div></div>`;
     }
@@ -1392,7 +1570,7 @@ function panelView(pub){
     top = `<div class="result"><h2>${pub.winner === 'humans' ? '人類陣營獲勝' : '怪物獲勝'}</h2></div>
       <ul class="roles">${pub.seats.map(p => { const info = ROLE_INFO[pub.roles[p.id]]; return `<li>${tok(p.id)}${esc(p.name)}<span class="${info.cls}">${info.name}</span></li>`; }).join('')}</ul>
       <div class="choices">${pub.ending ? '<button class="btn" data-act="showEnding">看結局</button>' : ''}<button class="btn" data-act="openSave">存檔與紀錄</button></div>
-      <div class="choices">${isHost() || app.mode === 'local' ? `<button class="btn primary" data-act="again" ${Bz}>同一批人再玩一局</button>` : '<p class="muted small">等房主開新的一局。</p>'}
+      <div class="choices">${isHost() || app.mode === 'local' ? `<button class="btn primary" data-act="again" ${Bz}>同一批人再玩一局</button><button class="btn" data-act="toLobby">回到大廳</button>` : '<p class="muted small">等房主開新的一局，或回到大廳調整角色。</p>'}
         <button class="btn quiet" data-act="leave">離開房間</button></div>`;
   }
 
@@ -1400,7 +1578,8 @@ function panelView(pub){
     const st = pub.status[p.id], S = pub.stats[p.id], out = [];
     out.push(`<span class="chip">HP ${S.hp}</span><span class="chip">SAN ${S.san}</span>`);
     if (app.mode === 'online' && !app.presence[p.id]) out.push('<span class="chip">離線</span>');
-    if (pub.revealed[p.id]) out.push('<span class="chip bad">怪物</span>');
+    if (pub.revealed[p.id]) out.push(`<span class="chip bad">狂暴的怪物</span><span class="chip">受創 ${(pub.wounds || {})[p.id] || 0} / ${RULES.stunAt}</span>`);
+    if (st.stunned) out.push('<span class="chip good">被壓制</span>');
     if (st.skip) out.push('<span class="chip bad">下回合不能行動</span>');
     if (st.apMod < 0) out.push(`<span class="chip bad">下回合行動點 ${st.apMod}</span>`);
     if (st.apMod > 0) out.push(`<span class="chip good">下回合行動點 +${st.apMod}</span>`);
@@ -1416,7 +1595,8 @@ function panelView(pub){
     return `<li><span>${se.icon}</span><span>${txt}</span></li>`;
   }).join('')}</ul>
   <p class="muted small">封印在雷雨過後檢查。同時亮著的房間越多，大家恢復得越多（目前恢復等級 ${pub.recovery}，會帶進中庭決戰）。</p>`;
-  return `${myBlock(pub)}${top}${ui.toast ? `<p class="toast" role="alert">${esc(ui.toast)}</p>` : ''}${statusList}${progress}`;
+  if (pub.paused) top = `<div class="pausebox"><h2>遊戲暫停中</h2><p class="small">${pub.paused.auto ? '線上的玩家不夠，遊戲自動暫停，倒數也停住。有第二位玩家回來就會自動繼續。' : '房主暫停了遊戲，倒數也一起停住。'}聊天照常可以用。</p></div>`;
+  return `${myBlock(pub)}${top}${hostBox(pub)}${ui.toast ? `<p class="toast" role="alert">${esc(ui.toast)}</p>` : ''}${statusList}${progress}`;
 }
 
 // 輪到你但其實什麼都做不了的時候，直接講清楚
@@ -1424,10 +1604,38 @@ function noMoveHint(pub, me){
   const here = pub.pos[app.uid], st = pub.status[app.uid], c = pub.map[here];
   const canLight = me.role === 'monster' || me.candle || st.matches > 0;
   const lightable = canLight && [here, ...L.adj(here)].some(k => { const x = pub.map[k]; return k === here ? x && !x.lit : !x || !x.lit; });
-  const anyMove = !pub.locks[here] && L.adj(here).some(k => { const x = pub.map[k]; return x && !pub.locks[k] && (!x.explored ? x.lit : (x.lit || me.candle || me.role === 'monster')); });
-  const canSearch = c.lit && !pub.searched[here];
+  const anyMove = !pub.locks[here] && L.adj(here).some(k => { const x = pub.map[k]; return x && !pub.locks[k] && (!x.explored ? x.lit : true); });
+  const canSearch = !pub.searched[here];
   if (lightable || anyMove || canSearch) return '';
   return `<p class="toast">你現在沒有能做的事${pub.locks[here] ? '（被鎖在房間裡）' : ''}，按「結束回合」交給下一位。</p>`;
+}
+
+// 房主操作：暫停／繼續（限時模式）、推進（有人卡住時）
+function hostBox(pub){
+  if (!(isHost() || app.mode === 'local') || pub.phase === 'over') return '';
+  const timed = !(pub.settings && pub.settings.untimed);
+  if (pub.paused) return `<div class="forcebox"><p class="small muted">房主操作</p><button class="btn primary" data-act="resume">繼續遊戲</button></div>`;
+  const pause = timed ? `<button class="btn quiet" data-act="pause">暫停</button>` : '';
+  const f = forceBox(pub);
+  if (!f && !pause) return '';
+  return f ? f.replace('<div class="forcebox">', `<div class="forcebox">${pause ? `<div class="choices">${pause}</div>` : ''}`) : `<div class="forcebox"><p class="small muted">房主操作</p><div class="choices">${pause}</div></div>`;
+}
+
+// 房主推進：不限時模式下有人離開或卡住時用（限時模式也能用，不必等倒數）
+function forceBox(pub){
+  if (!(isHost() || app.mode === 'local') || pub.phase === 'over') return '';
+  let label = '', wait = [];
+  if (pub.phase === 'day'){
+    const c = L.cur(pub);
+    if (c === app.uid && app.mode === 'online') return '';
+    label = `跳過 ${nameOf(c)} 的回合`;
+  } else {
+    wait = pendingSeats(pub);
+    if (!wait.length) return '';
+    label = pub.phase === 'reveal' ? '不等了，直接開始' : '不等了，直接結算';
+  }
+  return `<div class="forcebox"><p class="small muted">房主操作${wait.length ? `：還在等 ${wait.map(id => esc(nameOf(id))).join('、')}` : ''}</p>
+    <button class="btn quiet" data-act="force" data-label="${esc(label)}">${label}</button></div>`;
 }
 
 function stormPanel(pub, me){
@@ -1438,6 +1646,7 @@ function stormPanel(pub, me){
   const btn = (kind, target, label, extra = '') => `<button class="btn ${extra}" data-act="storm" data-kind="${kind}" data-target="${target || ''}" ${Bz}>${label}</button>`;
   const others = pub.seats.filter(p => p.id !== app.uid);
   if (pub.status[app.uid].cursed && me.role !== 'human') return `<h2>你被詛咒了</h2><p>這次雷雨什麼都做不了。</p>${btn('none', '', '繼續', 'primary')}`;
+  if (me.role === 'monster' && pub.status[app.uid].stunned) return `<h2 class="role-monster">你被壓制住了</h2><p>大家把你按在地上，這次雷雨什麼都做不了。</p>${btn('none', '', '繼續', 'primary')}`;
   if (me.role === 'monster' && me.trapped){
     const same = others.filter(p => pub.pos[p.id] === pub.pos[app.uid]);
     return `<h2 class="role-monster">你被鎖在房間裡</h2>
@@ -1449,7 +1658,7 @@ function stormPanel(pub, me){
   if (me.role === 'monster'){
     const alone = id => pub.seats.filter(p => p.id !== id && pub.pos[p.id] === pub.pos[id]).length === 0;
     return `<h2 class="role-monster">雷雨來了，要怎麼作祟？</h2>
-      <p class="small">理智 ${Math.max(0, me.monster.sanity)} / ${RULES.monsterSanity}。這次不作祟，理智會 -1，歸零就會曝光。</p>
+      ${pub.revealed[app.uid] ? '<p class="small role-monster"><strong>狂暴中</strong>：熄燈會連相鄰一盞一起熄、偷燭台不用等對方落單、作祟更可怕。</p>' : `<p class="small">理智 ${Math.max(0, me.monster.sanity)} / ${RULES.monsterSanity}。這次不作祟，理智會 -1，歸零就會曝光。</p>`}
       <p class="small"><strong>熄燈</strong>：鎖上的房間進不去。</p>
       <div class="choices">${me.snuffTargets.map(k => btn('snuff', k, esc(cellLabel(pub, k)))).join('') || '<span class="small muted">沒有能熄的燈</span>'}</div>
       <p class="small"><strong>偷燭台</strong>：只對落單、而且不在鎖上房間裡的人有用。</p>
@@ -1463,10 +1672,15 @@ function stormPanel(pub, me){
       <div class="choices">${me.snuffTargets.map(k => btn('snuff', k, esc(cellLabel(pub, k)))).join('')}</div>${btn('none', '', '不動手', 'quiet')}`;
   }
   if (me.role === 'witch'){
-    if (!me.candle || me.eyeUsed) return `<h2>雷雨來了</h2><p>${me.eyeUsed ? '你已經用燭火看過真實了。' : '你手上沒有燭台，看不見真實。'}</p>${btn('none', '', '躲好等雷雨過去', 'primary')}`;
-    return `<h2 class="role-witch">要用燭火看見誰的真實？</h2>
-      <p class="small">看完燭台就會燃盡，之後你不能點燈，除非再找到一個燭台。</p>
-      <div class="choices">${others.map(p => btn('eye', p.id, esc(p.name))).join('')}</div>${btn('none', '', '這次先不用', 'quiet')}`;
+    const canEye = me.candle && !me.eyeUsed;
+    const lastT = me.lastWard && me.lastWard.storm === pub.storms ? me.lastWard.target : null;
+    const eye = canEye ? `<p class="small"><strong>看見真實</strong>：看完燭台就會燃盡，之後要再找到燭台才能點燈。</p>
+      <div class="choices">${others.map(p => btn('eye', p.id, esc(p.name))).join('')}</div>`
+      : `<p class="small muted">${me.eyeUsed ? '你已經用燭火看過真實了。' : '你手上沒有燭台，看不見真實。'}</p>`;
+    const ward = me.wards > 0 ? `<p class="small"><strong>守護結界</strong>（還剩 ${me.wards} 次）：被守護的人這次雷雨不會被偷燭台、不會被作祟，他所在的房間也不會被熄燈。</p>
+      <div class="choices">${others.map(p => `<button class="btn" data-act="storm" data-kind="ward" data-target="${p.id}" ${p.id === lastT || ui.busy ? 'disabled' : ''}>${esc(p.name)}${p.id === lastT ? '（上次守過）' : ''}</button>`).join('')}</div>`
+      : '<p class="small muted">守護結界的次數用完了。</p>';
+    return `<h2 class="role-witch">雷雨來了，要怎麼做？</h2><p class="small">看見真實和守護結界，一次雷雨只能選一個。</p>${eye}${ward}${btn('none', '', '這次都不用', 'quiet')}`;
   }
   return `<h2>雷雨來了</h2><p>你縮在角落，聽著外面的雷聲和腳步聲。</p>${btn('none', '', '等雷雨過去', 'primary')}`;
 }
@@ -1619,6 +1833,10 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'takeSeat': Online.takeSeat(); break;
+    case 'pause': send({ type:'pause' }); break;
+    case 'resume': send({ type:'resume' }); break;
+    case 'force': if (window.confirm(`確定要${d.label}嗎？還沒行動的人會自動算成不行動（決戰時人類自動攻擊）。`)) send({ type:'force' }); break;
+    case 'evClose': ui.evDismissed = app.pub && app.pub.lastEvent ? app.pub.lastEvent.id : 0; render(); break;
     case 'togglePin': ui.showPin = !ui.showPin; render(); break;
     case 'reclaim': {
       const name = document.getElementById('myName').value.trim();
@@ -1635,6 +1853,8 @@ $app.addEventListener('click', async e => {
       Online.addAlt(nm); break;
     }
     case 'removeAlt': Online.removeAlt(); break;
+    case 'swapAlt': Online.swapAlt(); break;
+    case 'toLobby': ui.endingSeen = app.pub && app.pub.gameId; B.backToLobby(); break;
     case 'controlAs': Online.switchSeat(d.id); break;
     case 'toggleAltLocal': Local.toggleAlt(d.id); break;
     case 'create':
@@ -1669,6 +1889,7 @@ $app.addEventListener('click', async e => {
     case 'light': send({ type:'light', target:d.k }); break;
     case 'lightMode': ui.lightMode = !ui.lightMode; render(); break;
     case 'search': send({ type:'search' }); break;
+    case 'attack': send({ type:'attack', target:d.id }); break;
     case 'lock': send({ type:'lock', target:document.getElementById('lockTarget').value }); break;
     case 'endTurn': ui.lightMode = false; ui.endedByMe = true; send({ type:'endTurn' }); break;
     case 'storm': send({ type:'stormAction', kind:d.kind, target:d.target || '' }); break;

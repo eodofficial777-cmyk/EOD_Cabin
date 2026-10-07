@@ -7,7 +7,7 @@
           ".write": "auth != null && !data.exists() && newData.child('host').val() === auth.uid && newData.child('status').val() === 'lobby'",
           "preset": {
             ".write": "auth != null && data.parent().child('host').val() === auth.uid && data.parent().child('status').val() === 'lobby'",
-            ".validate": "newData.isString() && newData.val().matches(/^(fast|standard|slow)$/)"
+            ".validate": "newData.isString() && newData.val().matches(/^(untimed|fast|standard|slow)$/)"
           },
           "mode": {
             ".write": "auth != null && data.parent().child('host').val() === auth.uid && data.parent().child('status').val() === 'lobby'",
@@ -16,12 +16,15 @@
           "allowAlts": {
             ".write": "auth != null && data.parent().child('host').val() === auth.uid && data.parent().child('status').val() === 'lobby'",
             ".validate": "newData.isBoolean()"
+          },
+          "status": {
+            ".write": "auth != null && data.parent().child('host').val() === auth.uid && data.val() === 'over' && newData.val() === 'lobby'"
           }
         },
         "seats": {
           ".read": "auth != null",
           "$uid": {
-            ".write": "auth != null && ($uid === auth.uid || ($uid === auth.uid + '_alt' && root.child('rooms').child($code).child('meta/allowAlts').val() === true && root.child('rooms').child($code).child('seats').child(auth.uid).exists())) && root.child('rooms').child($code).child('meta/status').val() === 'lobby'",
+            ".write": "auth != null && root.child('rooms').child($code).child('meta/status').val() === 'lobby' && ($uid === auth.uid || ($uid === auth.uid + '_alt' && (!newData.exists() || data.exists() || (root.child('rooms').child($code).child('meta/allowAlts').val() === true && root.child('rooms').child($code).child('seats').child(auth.uid).exists()))))",
             "name": {
               ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 12"
             },
@@ -64,7 +67,10 @@
             "$id": {
               ".write": "auth != null && !data.exists() && (newData.child('uid').val() === auth.uid || newData.child('uid').val() === auth.uid + '_alt') && ((($ch === 'ic' || $ch === 'ooc') && root.child('rooms').child($code).child('seats').child(newData.child('uid').val()).exists() && root.child('game').child($code).child('core').child('phase').val() !== 'storm' && root.child('game').child($code).child('core').child('phase').val() !== 'reveal') || ($ch === 'spec' && root.child('rooms').child($code).child('spectators').child(auth.uid).exists()))",
               ".validate": "newData.hasChildren(['uid', 'text', 'ts']) && newData.child('text').isString() && newData.child('text').val().length >= 1 && newData.child('text').val().length <= 200 && newData.child('ts').val() === now"
-            }
+            },
+            ".indexOn": [
+              "ts"
+            ]
           }
         },
         "wolf": {
@@ -72,7 +78,10 @@
           "$id": {
             ".write": "auth != null && !data.exists() && newData.child('uid').val() === auth.uid && root.child('game').child($code).child('core').child('side').child(auth.uid).val() === 'monster' && root.child('game').child($code).child('core').child('phase').val() !== 'over'",
             ".validate": "newData.hasChildren(['uid', 'text', 'ts']) && newData.child('text').isString() && newData.child('text').val().length >= 1 && newData.child('text').val().length <= 200 && newData.child('ts').val() === now"
-          }
+          },
+          ".indexOn": [
+            "ts"
+          ]
         },
         "spectators": {
           ".read": "auth != null",
@@ -159,6 +168,12 @@
         "log": {
           ".read": "auth != null"
         }
+      }
+    },
+    "roomIndex": {
+      "$code": {
+        ".write": "auth != null",
+        ".validate": "newData.val() === now"
       }
     }
   }
