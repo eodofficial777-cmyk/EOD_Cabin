@@ -1373,9 +1373,10 @@ function guideHtml(section){
         `<strong>探索（1 點）</strong>：點地圖上發光的「點亮的黑暗」，走進去擲 1D20：1–2 遇到災獸、3–5 特殊事件、${sealRollText()}，其餘是一般房間。`,
         '<strong>移動（1 點）</strong>：點相鄰、外框是虛線的房間。沒有燭台也能摸黑走進暗房，但會擲骰遇到事件：可能受傷、被嚇到，也可能摸到火柴或燭台。',
         '<strong>摸黑搜索（1 點）</strong>：在暗房裡也能搜索，比亮著的房間危險，但更容易摸到燭台。',
+        `<strong>燭光經驗（全隊共用）</strong>：大家一共點亮的燈越多，搜索時越容易多找到一件裝備（每 ${RULES.lightBonusStep} 盞多 1/6 機會，最多 ${RULES.lightBonusMax}/6）。不記錄是誰點的。`,
         `<strong>攻擊（1 點）</strong>：理智崩潰、身份曝光的怪物跟你在同一間房時，可以攻擊牠。累積 ${RULES.stunAt} 點傷害就能壓制牠（下次雷雨不能作祟），造成的傷害也會讓中庭的怪物變弱。`,
         `<strong>搜索（1 點）</strong>：在房間裡按「搜索這間」，可能找到燭台、火柴、裝備，也可能被嚇到。同一間房要等雷雨過後才能再搜，整局最多 ${RULES.searchLimit} 次，之後就「翻遍」了，要往外探索新房間。`,
-        '<strong>鑰匙（不花點數）</strong>：從選單挑一間房按「上鎖」。鎖上的房間到雷雨結束前誰都不能進出；不能鎖自己所在的那間。只有普通人和巫師有鑰匙。把可疑的人鎖起來，他雷雨時就只能對同一間出手。',
+        '<strong>鑰匙（不花點數）</strong>：從選單挑一間房按「上鎖」。鎖上的房間到雷雨結束前誰都不能進出；不能鎖自己所在的那間。只有普通人和巫師有鑰匙。把可疑的人鎖起來，他雷雨時就只能對同一間出手；但同一間房不能連續兩次雷雨被鎖，被鎖的怪物也可以擲 1D20 撞門（15 以上撞開，大家都會聽到）。',
         '<strong>結束回合</strong>：點數沒用完也可以提早結束。',
       ])}
       <h3>雷雨時</h3>${ul([
@@ -1554,7 +1555,8 @@ function panelView(pub){
       const searchable = !pub.searched[here] && !exhausted;
       const human = !isMonsterSide(me.role);
       const foes = human ? pub.seats.filter(p => p.id !== id && pub.revealed[p.id] && pub.pos[p.id] === here) : [];
-      const lockable = Object.keys(pub.map).filter(k => pub.map[k].explored && !pub.locks[k] && k !== here);
+      const lastLocked = pub.lastLocked || [];
+      const lockable = Object.keys(pub.map).filter(k => pub.map[k].explored && !pub.locks[k] && k !== here && !lastLocked.includes(k));
       top = `<div class="turn">${tok(id, 'big')}<div><strong>輪到你了</strong>
           <div class="ap" aria-label="行動點 ${pub.ap}">${Array.from({ length:Math.max(pub.ap, RULES.apPerTurn) }, (_, i) => `<i class="${i < pub.ap ? 'on' : ''}"></i>`).join('')}<span class="small">剩 ${pub.ap} 點</span></div></div></div>
         ${noMoveHint(pub, me)}
@@ -1569,7 +1571,7 @@ function panelView(pub){
         ${exhausted ? '<p class="muted small">這間已經被翻遍了，往外探索看看吧。</p>' : pub.searched[here] ? '<p class="muted small">這間要等下次雷雨過後才能再搜。</p>' : !c.lit ? '<p class="muted small">這裡是暗的：摸黑搜索比較危險，但更容易摸到燭台。</p>' : ''}
         ${foes.length ? `<p class="small role-monster">曝光的怪物就在這間房！攻擊命中會造成傷害，累積 ${RULES.stunAt} 點就能壓制牠；沒打中會被反擊。</p>` : ''}
         ${!human ? '<p class="muted small">你沒有鑰匙，不能鎖門。</p>' : `<div class="row lockrow">
-          <div class="field"><label for="lockTarget">鑰匙（每次雷雨之間一次）</label>
+          <div class="field"><label for="lockTarget">鑰匙（每次雷雨之間一次；上次雷雨鎖過的房間這次不能鎖）</label>
             <select id="lockTarget" ${st.lockUsed ? 'disabled' : ''}>${lockable.map(k => `<option value="${k}" ${k === here ? 'selected' : ''}>${esc(CARDS[pub.map[k].card].name)}</option>`).join('')}</select></div>
           <button class="btn" data-act="lock" ${st.lockUsed || !lockable.length || ui.busy ? 'disabled' : ''}>${st.lockUsed ? '已用過' : '上鎖'}</button>
         </div>`}`;
@@ -1608,6 +1610,7 @@ function panelView(pub){
     const txt = st.found ? `${CARDS[se.room].name}${st.lit ? '亮著' : '暗著'}，${se.tag}房亮著 ${Math.min(st.tagLit, st.need)}/${st.need}` : `還沒找到${CARDS[se.room].name}`;
     return `<li><span>${se.icon}</span><span>${txt}</span></li>`;
   }).join('')}</ul>
+  <p class="small">🕯 全隊一共點亮過 ${pub.totalLights || 0} 盞燈（燭光經驗 ${Math.min(RULES.lightBonusMax, Math.floor((pub.totalLights || 0) / RULES.lightBonusStep))}：搜索時多找到裝備的機會 +${Math.min(RULES.lightBonusMax, Math.floor((pub.totalLights || 0) / RULES.lightBonusStep))}/6）</p>
   <p class="muted small">封印在雷雨過後檢查。同時亮著的房間越多，大家恢復得越多（目前恢復等級 ${pub.recovery}，會帶進中庭決戰）。</p>`;
   if (pub.paused) top = `<div class="pausebox"><h2>遊戲暫停中</h2><p class="small">${pub.paused.auto ? '線上的玩家不夠，遊戲自動暫停，倒數也停住。有第二位玩家回來就會自動繼續。' : '房主暫停了遊戲，倒數也一起停住。'}聊天照常可以用。</p></div>`;
   return `${myBlock(pub)}${top}${hostBox(pub)}${ui.toast ? `<p class="toast" role="alert">${esc(ui.toast)}</p>` : ''}${statusList}${progress}`;
@@ -1670,10 +1673,21 @@ function stormPanel(pub, me){
   if (me.role === 'monster' && pub.status[app.uid].stunned) return `<h2 class="role-monster">你被壓制住了</h2><p>大家把你按在地上，這次雷雨什麼都做不了。</p>${btn('none', '', '繼續', 'primary')}`;
   if (me.role === 'monster' && me.trapped){
     const same = others.filter(p => pub.pos[p.id] === pub.pos[app.uid]);
+    const dc = pub.revealed[app.uid] ? RULES.bashDCFrenzy : RULES.bashDC;
+    const here = pub.pos[app.uid];
+    const bashOpts = [
+      ...[...new Set([...(me.freeTargets || []), ...(pub.map[here].lit ? [here] : [])])].map(k => [`snuff|${k}`, `熄燈：${cellLabel(pub, k)}${CARDS[(pub.map[k] || {}).card || 'filler'].seal ? '（封印房）' : ''}`]),
+      ...others.map(p => [`steal|${p.id}`, `偷燭台：${p.name}`]),
+      ...others.map(p => [`haunt|${p.id}`, `作祟：${p.name}`]),
+    ];
     return `<h2 class="role-monster">你被鎖在房間裡</h2>
-      <p class="small">這次雷雨只能對同一間房出手。理智 ${Math.max(0, me.monster.sanity)} / ${RULES.monsterSanity}。</p>
+      <p class="small">理智 ${Math.max(0, me.monster.sanity)} / ${RULES.monsterSanity}。可以只對同一間房出手，或冒險撞門。</p>
+      <p class="small"><strong>留在房裡</strong></p>
       <div class="choices">${me.snuffTargets.map(k => btn('snuff', k, `熄掉這間的燈（${esc(cellLabel(pub, k))}）`)).join('')}
-        ${same.map(p => btn('haunt', p.id, `作祟 ${esc(p.name)}`)).join('')}</div>
+        ${same.map(p => btn('haunt', p.id, `作祟 ${esc(p.name)}`)).join('') || (me.snuffTargets.length ? '' : '<span class="small muted">房裡沒有亮燈，也沒有別人</span>')}</div>
+      <p class="small"><strong>撞門</strong>：擲 1D20，${dc} 以上就撞開，接著做你選的事。不管成功失敗，大家都會聽到這間房的門在響。</p>
+      <div class="row pickrow"><select id="pick-bash" aria-label="撞開之後要做什麼">${bashOpts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('')}</select>
+        <button class="btn danger" data-act="stormBash" ${ui.busy ? 'disabled' : ''}>撞門（1D20 ≥ ${dc}）</button></div>
       ${btn('none', '', '這次不作祟', 'quiet')}`;
   }
   if (me.role === 'monster'){
@@ -1926,6 +1940,7 @@ $app.addEventListener('click', async e => {
     case 'attack': send({ type:'attack', target:d.id }); break;
     case 'lock': send({ type:'lock', target:document.getElementById('lockTarget').value }); break;
     case 'endTurn': ui.lightMode = false; ui.endedByMe = true; send({ type:'endTurn' }); break;
+    case 'stormBash': { const el = document.getElementById('pick-bash'); if (el && el.value){ const [then, target] = el.value.split('|'); send({ type:'stormAction', kind:'bash', then, target }); } break; }
     case 'stormPick': { const el = document.getElementById('pick-' + d.kind); if (el && el.value) send({ type:'stormAction', kind:d.kind, target:el.value }); break; }
     case 'storm': send({ type:'stormAction', kind:d.kind, target:d.target || '' }); break;
     case 'battle': send({ type:'battleAction', act:d.a, target:d.target || '' }); break;
