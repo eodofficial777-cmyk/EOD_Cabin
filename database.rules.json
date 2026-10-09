@@ -14,7 +14,7 @@
             ".validate": "newData.isString() && newData.val().matches(/^(roles|coop)$/)"
           },
           "allowAlts": {
-            ".write": "auth != null && data.parent().child('host').val() === auth.uid && data.parent().child('status').val() === 'lobby'",
+            ".write": "auth != null && data.parent().child('host').val() === auth.uid && (data.parent().child('status').val() === 'lobby' || data.parent().child('status').val() === 'over')",
             ".validate": "newData.isBoolean()"
           },
           "status": {
@@ -24,7 +24,7 @@
         "seats": {
           ".read": "auth != null",
           "$uid": {
-            ".write": "auth != null && root.child('rooms').child($code).child('meta/status').val() === 'lobby' && ($uid === auth.uid || ($uid === auth.uid + '_alt' && (!newData.exists() || data.exists() || (root.child('rooms').child($code).child('meta/allowAlts').val() === true && root.child('rooms').child($code).child('seats').child(auth.uid).exists()))))",
+            ".write": "auth != null && (root.child('rooms').child($code).child('meta/status').val() === 'lobby' || root.child('rooms').child($code).child('meta/status').val() === 'over') && ($uid === auth.uid || ($uid === auth.uid + '_alt' && (!newData.exists() || data.exists() || (root.child('rooms').child($code).child('meta/allowAlts').val() === true && root.child('rooms').child($code).child('seats').child(auth.uid).exists()))))",
             "name": {
               ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 12"
             },

@@ -295,6 +295,26 @@ code{background:var(--surface);padding:0 4px;border-radius:4px}
   .mapbox{max-height:calc(100vh - 230px)}
 }
 .btn.skill{border-color:var(--flame);color:var(--flame)}
+.nextround{margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}
+.nextround h3{margin:0 0 6px}
+.tab.unread{color:var(--ink);font-weight:700}
+.tab .badge{display:inline-block;min-width:1.5em;margin-left:6px;padding:0 6px;border-radius:999px;background:var(--flame);color:#1b1306;font-size:.8em;line-height:1.6;text-align:center;box-shadow:0 0 8px var(--glow);animation:unreadGlow 1.6s ease-in-out infinite}
+@keyframes unreadGlow{0%,100%{box-shadow:0 0 4px var(--glow)}50%{box-shadow:0 0 14px var(--glow)}}
+@media (prefers-reduced-motion: reduce){.tab .badge{animation:none}}
+.orderstrip{margin:-4px 0 12px;padding:8px 12px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
+.orderstrip summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline}
+.orderstrip ol{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.orderstrip li{display:flex;align-items:center;gap:5px;padding:3px 9px 3px 4px;border-radius:999px;border:1px solid var(--line);font-size:.9em;max-width:100%}
+.orderstrip li .onum{font-size:.8em;color:var(--muted);min-width:1.1em;text-align:right}
+.orderstrip li .oname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:7em}
+.orderstrip li .tok{width:22px;height:22px;font-size:.75em}
+.orderstrip li.done{opacity:.45}
+.orderstrip li.now{border:2px solid var(--flame);box-shadow:0 0 10px var(--glow);font-weight:700}
+.orderstrip li.me .oname::after{content:'（你）';color:var(--muted);font-weight:400}
+.orderstrip li em{font-style:normal;font-size:.8em;color:var(--monster)}
+.forecast{margin:10px 0;padding:8px 12px;border-radius:10px;border:1px dashed var(--line)}
+.forecast ul{margin:4px 0;padding-left:1.1em}
+.forecast li{margin:2px 0}
 </style>
 </head>
 <body>
@@ -323,7 +343,7 @@ function logOf(pub){ return app.mode === 'online' ? app.log : (pub && pub.log) |
 const MAX_SPECTATORS = 30;
 const ui = freshUi();
 function freshUi(){
-  return { toast:'', homeErr:'', chatTab:'story', draft:{}, exporting:false, exportRange:'all', exportMark:0, exportChunks:[],
+  return { sel:{}, seen:{}, toast:'', homeErr:'', chatTab:'story', draft:{}, exporting:false, exportRange:'all', exportMark:0, exportChunks:[],
            seenStorm:-1, seenNotes:{}, lightMode:false, showCard:false, lastTurnKey:null, guide:null, lastTimeout:0, busy:false, busyTimer:null, refocus:null, gameId:null };
 }
 const serverNow = () => Date.now() + app.offset;
@@ -502,7 +522,7 @@ const Online = {
     const meta = metaSnap.val();
     const seatSnap = await get(this.r(`rooms/${code}/seats/${app.authUid}`));
     if (!seatSnap.exists()){
-      if (meta.status !== 'lobby') throw meta.status === 'over' ? '這一局剛結束，等房主按「回到大廳」之後就能加入，或先按「觀戰」' : '這個房間的遊戲已經開始了，可以按「觀戰」進去看';
+      if (meta.status !== 'lobby' && meta.status !== 'over') throw '這個房間的遊戲已經開始了，可以按「觀戰」進去看。這一局結束後就能加入';
       if (!name) throw '請輸入角色名字';
       const seats = (await get(this.r(`rooms/${code}/seats`))).val() || {};
       if (Object.keys(seats).length >= RULES.maxPlayers) throw '玩家已經滿了，可以按「觀戰」進去看';
@@ -621,7 +641,7 @@ const Online = {
   async leave(){
     const { remove } = this.fb, code = app.code;
     if (code){
-      if (app.meta && app.meta.status === 'lobby'){
+      if (app.meta && (app.meta.status === 'lobby' || app.meta.status === 'over')){
         await remove(this.r(`rooms/${code}/seats/${app.authUid}_alt`)).catch(() => {});
         await remove(this.r(`rooms/${code}/seats/${app.authUid}`)).catch(() => {});
       }
@@ -775,10 +795,14 @@ setInterval(() => {
 
 // ---------- 小工具 ----------
 function esc(t){ return String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// 遊戲進行中用這一局的座位；回到大廳後要看房間裡現在的座位（新加入的人、新的副角色）
+function roomSeatOrder(){ return Object.entries(app.seats).sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0)).map(([id]) => id); }
 function seatOrder(){
-  if (app.pub) return app.pub.seats.map(p => p.id);
-  return Object.entries(app.seats).sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0)).map(([id]) => id);
+  if (app.pub && !(app.meta && app.meta.status === 'lobby') && !isNewcomer()) return app.pub.seats.map(p => p.id);
+  return roomSeatOrder();
 }
+// 上一局結束後才加入的人：還沒玩過這一局，先看等候畫面
+function isNewcomer(){ return app.mode === 'online' && app.meta && app.meta.status === 'over' && !!app.pub && !!app.seats[app.authUid] && !app.pub.seats.some(p => p.id === app.authUid); }
 function isSpectator(){ return !!app.uid && !app.seats[app.uid] && !!app.spectators[app.uid] && !(app.pub && app.pub.seats.some(p => p.id === app.uid)); }
 function nameOf(id){
   if (app.seats[id]) return app.seats[id].name;
@@ -899,7 +923,7 @@ function avatarPicker(forId, compact = false){
 }
 function cellLabel(pub, k){
   const c = pub.map[k];
-  if (c && c.explored) return CARDS[c.card].name;
+  if (c && c.explored) return c.label || CARDS[c.card].name;
   const [x, y] = k.split(',').map(Number);
   return `未探索的光（${x},${-y}）`;
 }
@@ -914,25 +938,78 @@ const isMonsterSide = r => r === 'monster' || r === 'fallen';
 // =========================================================
 // 畫面
 // =========================================================
+// 注音、倉頡等輸入法選字時（composition），重畫畫面會把輸入框整個換掉，選到一半的字就會變成注音符號留在框裡。
+// 所以選字期間先不重畫，等選完字再補畫一次。
+let composing = false, renderPending = false;
+// 下拉選單打開時重畫會把選單關掉、選項跳回預設，所以選單打開期間也先不重畫
+let selectHold = false, selectTimer = null;
+function releaseSelect(){
+  if (!selectHold) return;
+  selectHold = false; clearTimeout(selectTimer);
+  if (renderPending){ renderPending = false; setTimeout(render, 0); }
+}
+document.addEventListener('pointerdown', e => {
+  if (e.target && e.target.tagName === 'SELECT'){ selectHold = true; clearTimeout(selectTimer); selectTimer = setTimeout(releaseSelect, 15000); }
+}, true);
+document.addEventListener('change', e => { if (e.target && e.target.tagName === 'SELECT') releaseSelect(); }, true);
+document.addEventListener('focusout', e => { if (e.target && e.target.tagName === 'SELECT') releaseSelect(); }, true);
+// 每一輪（誰的回合、第幾次雷雨、哪個階段）各自記住選過的目標，換輪就回到預設，避免拿上一輪的選擇鎖錯房間
+function turnKey(){ const p = app.pub; return p ? [p.gameId, p.phase, p.round, p.turnIdx, p.storms, p.battle ? p.battle.round : 0].join('|') : ''; }
+document.addEventListener('compositionstart', () => { composing = true; }, true);
+document.addEventListener('compositionend', () => {
+  composing = false;
+  if (renderPending){ renderPending = false; setTimeout(render, 0); }
+}, true);
+// 文字框裡打到一半的內容（聊天框以外），重畫後要放回去
+const KEEP_SKIP = new Set(['chatText']);
 function render(){
+  if (composing || selectHold){ renderPending = true; return; }
   const mb = $app.querySelector('.mapbox');
   const saved = mb ? { l:mb.scrollLeft, t:mb.scrollTop } : null;
-  const active = document.activeElement && document.activeElement.id;
+  const activeEl = document.activeElement;
+  const active = activeEl && $app.contains(activeEl) && activeEl.id;
+  let sel = null;
+  if (active){ try { sel = [activeEl.selectionStart, activeEl.selectionEnd]; } catch {} }
+  const kept = {};
+  const initial = el => el.tagName === 'SELECT' ? ([...el.options].find(o => o.defaultSelected) || el.options[0] || {}).value : el.defaultValue;
+  $app.querySelectorAll('input[id], textarea[id]').forEach(el => {   // 下拉選單另外用 ui.sel 記（照回合分開）
+    if (KEEP_SKIP.has(el.id) || el.readOnly || ['file','checkbox','radio','hidden'].includes(el.type)) return;
+    if (el.value !== initial(el)) kept[el.id] = el.value;
+  });
   let html;
   if (!app.ready) html = `<main class="wrap home"><h1>荒中小屋</h1><p class="muted">連線中</p></main>`;
   else if (!app.code) html = homeView();
   else if (!app.meta) html = `<main class="wrap home"><p class="muted">讀取房間中</p></main>`;
-  else if (app.pub && app.meta.status !== 'lobby') html = gameView();
+  else if (app.pub && app.meta.status !== 'lobby' && !isNewcomer()) html = gameView();
   else html = lobbyView();
+  if (!html.includes('data-act="tab"')) updateTitle(0);
   $app.innerHTML = html;
+  const tk = turnKey();
+  $app.querySelectorAll('select[id]').forEach(el => {
+    const m = ui.sel[el.id];
+    if (m && m.k === tk && [...el.options].some(o => o.value === m.v)) el.value = m.v;
+  });
+  Object.entries(kept).forEach(([id, v]) => {
+    const el = document.getElementById(id); if (!el || el.value !== initial(el)) return;
+    if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === v)) return;   // 選項已經不存在（例如那個人離開房間）
+    el.value = v;
+  });
   const nb = $app.querySelector('.mapbox');
   if (nb){
     if (saved){ nb.scrollLeft = saved.l; nb.scrollTop = saved.t; }
     else { nb.scrollLeft = (nb.scrollWidth - nb.clientWidth) / 2; nb.scrollTop = (nb.scrollHeight - nb.clientHeight) / 2; }
   }
   const f = document.getElementById('feed'); if (f) f.scrollTop = f.scrollHeight;
-  const focusId = ui.refocus || (active === 'chatText' ? 'chatText' : active === 'seatName' ? 'seatName' : null);
-  if (focusId){ const el = document.getElementById(focusId); if (el){ el.focus(); const n = el.value.length; try { el.setSelectionRange(n, n); } catch {} } }
+  const focusId = ui.refocus || active || null;
+  if (focusId){
+    const el = document.getElementById(focusId);
+    if (el && typeof el.focus === 'function'){
+      el.focus({ preventScroll:true });
+      const n = (el.value || '').length;
+      const r = !ui.refocus && sel && sel[0] != null ? [Math.min(sel[0], n), Math.min(sel[1], n)] : [n, n];
+      try { el.setSelectionRange(r[0], r[1]); } catch {}
+    }
+  }
   ui.refocus = null;
 }
 
@@ -1024,9 +1101,11 @@ function lobbyView(){
       ${specList()}
       ${host ? `<div class="loadrow"><label class="btn quiet" for="loadFile">讀取存檔</label><input type="file" id="loadFile" accept=".lhsave,.txt" hidden>
         <span class="muted small">原本的玩家要用同樣的名字進房、人數相同。</span></div>` : ''}
+      ${app.meta.status === 'over' ? '<p class="note">上一局剛結束，大家還在看結局。房主按「再玩一局」時，你會一起加入新的一局。</p>' : ''}
       <div class="choices">
         ${isSpectator()
           ? `<button class="btn primary" data-act="takeSeat" ${ids.length >= RULES.maxPlayers ? 'disabled' : ''}>我要上場</button>`
+          : app.meta.status === 'over' ? ''
           : host
           ? `<button class="btn primary" data-act="start" ${canStart && !ui.busy ? '' : 'disabled'}>開始遊戲</button>`
           : `<button class="btn ${me && me.ready ? '' : 'primary'}" data-act="ready">${me && me.ready ? '取消準備' : '準備好了'}</button>`}
@@ -1060,6 +1139,25 @@ function altSection(ids, host, local){
   return parts.join('');
 }
 
+// 結局畫面的「下一局」名單：新加入的人、副角色都可以在這裡調整，不用先回大廳
+function nextRoundHtml(pub){
+  if (app.mode !== 'online') return '';
+  const ids = roomSeatOrder();
+  const inGame = new Set(pub.seats.map(p => p.id));
+  const fresh = ids.filter(id => !inGame.has(id));
+  const gone = pub.seats.filter(p => !app.seats[p.id]).map(p => p.name);
+  const mine = id => isMine(id) && app.seats[id] && app.seats[id].owner
+    ? ` <button class="btn quiet" data-act="swapAlt">和主角色互換</button><button class="btn quiet" data-act="removeAlt">移除副角色</button>` : '';
+  return `<section class="nextround">
+    <h3>下一局名單（${ids.length} / ${RULES.maxPlayers}）</h3>
+    <ul class="cardlist">${ids.map(id => `<li>${esc(nameOf(id))}${app.seats[id].owner ? `（${esc(nameOf(app.seats[id].owner))} 的副角色）` : ''}${fresh.includes(id) ? ' <span class="chip good">新加入</span>' : ''}${mine(id)}</li>`).join('')}</ul>
+    ${gone.length ? `<p class="small muted">已經離開：${gone.map(esc).join('、')}</p>` : ''}
+    <p class="small muted">想加入的新玩家用房間代碼或邀請連結進來就好，會直接排進下一局。觀眾也可以按「我要上場」。</p>
+    ${altSection(ids, isHost(), false)}
+    ${isSpectator() ? `<div class="choices"><button class="btn primary" data-act="takeSeat" ${ids.length >= RULES.maxPlayers ? 'disabled' : ''}>我要上場</button></div>` : ''}
+  </section>`;
+}
+
 function specList(){
   const ids = Object.keys(app.spectators || {}).filter(id => id !== SPEC_ID);
   if (!ids.length) return '';
@@ -1084,6 +1182,7 @@ function gameView(){
       <div class="seals" aria-label="封印">${SEALS.map(se => `<span class="seal ${pub.seals[se.id] ? 'broken' : ''}" title="${se.name}${pub.seals[se.id] ? '已解開' : '未解開'}">${se.icon}</span>`).join('')}</div>
     </header>
     ${turnBanner(pub)}
+    ${orderStrip(pub)}
     ${isSpectator() ? `<div class="specbar">你正在觀戰，只看得到公開資訊。${specList()}</div>` : ''}
     <div class="game">
       <div class="mapcol">${eventCard(pub)}<section class="mapbox ${pub.phase === 'storm' ? 'stormy' : ''}" aria-label="地下室地圖">${pub.phase === 'battle' || (pub.phase === 'over' && pub.battle) ? battleStage(pub) : mapView(pub)}</section></div>
@@ -1120,6 +1219,66 @@ function eventCard(pub){
 }
 
 // 地圖上方的醒目提示：現在輪到誰、雷雨／決戰還在等誰、倒數
+// 這一輪的行動順序：每一輪起始的人會往後挪一位，畫出來大家才不會以為被跳過
+function roundOrder(pub, round){
+  const ids = pub.seats.map(p => p.id);
+  const off = (round - 1) % ids.length;
+  return ids.slice(off).concat(ids.slice(0, off));
+}
+function orderStrip(pub){
+  if (pub.paused || !['day', 'storm', 'reveal'].includes(pub.phase)) return '';
+  const day = pub.phase === 'day';
+  // 雷雨和看身份卡時，先預告下一輪的順序
+  const round = day ? pub.round : pub.phase === 'reveal' ? 1 : pub.round + 1;
+  const order = day ? pub.turnOrder : roundOrder(pub, round);
+  const idx = day ? pub.turnIdx : -1;
+  const me = app.uid;
+  const myPos = order.indexOf(me);
+  const items = order.map((id, i) => {
+    const st = pub.status[id] || {};
+    const cls = i < idx ? 'done' : i === idx ? 'now' : '';
+    const flag = i < idx ? '' : st.skip ? '<em>會跳過</em>' : '';
+    return `<li class="${cls} ${isMine(id) || id === me ? 'me' : ''}"><span class="onum">${i + 1}</span>${tok(id)}<span class="oname">${esc(nameOf(id))}</span>${flag}</li>`;
+  }).join('');
+  let hint = '';
+  if (day && myPos >= 0){
+    if (myPos < idx) hint = '這一輪你已經行動過了。';
+    else if (myPos > idx) hint = `再 ${myPos - idx} 位就輪到你。`;
+  } else if (!day && myPos >= 0) hint = `你在第 ${myPos + 1} 位。`;
+  const title = day ? `第 ${round} 輪的行動順序` : `第 ${round} 輪的行動順序${pub.phase === 'storm' ? '（雨停後開始）' : ''}`;
+  return `<details class="orderstrip" ${ui.orderClosed ? '' : 'open'}>
+    <summary><strong>${title}</strong>${hint ? `<span class="muted small">${hint}</span>` : ''}<span class="muted small">每一輪由下一位先開始</span></summary>
+    <ol>${items}</ol>
+  </details>`;
+}
+
+// 一般攻擊的命中率：1D20＋加成 ≥ 怪物防禦 1D10＋護甲（擲出 20 一定命中）
+function hitChance(bonus, defBase = RULES.bossDefBase){
+  let p = 0;
+  for (let k = 1; k <= 10; k++){
+    const need = k + defBase - bonus;
+    p += Math.min(1, Math.max(1 / 20, (21 - need) / 20));
+  }
+  return Math.round(p * 10);
+}
+// 中庭決戰預估：點燈讓大家恢復力量，等於讓怪物變得好打。只放公開資訊（被偷的燭台、怪物陣營的裝備要開戰才揭曉）
+function battleForecast(pub){
+  const rec = pub.recovery || 0, maxLit = pub.maxLit || 0, step = RULES.recoveryStep;
+  const g = app.view && app.view.me && pub.stats[app.uid] ? L.gearTotal(pub, app.uid) : { atk:0 };
+  const base = hitChance(g.atk), now = hitChance(g.atk + rec);
+  const next = rec < 3 ? `下一級：同時點亮 ${(rec + 1) * step} 間（目前最多同時亮過 ${maxLit} 間，還差 ${(rec + 1) * step - maxLit} 間）` : '已經是最高等級了';
+  const dealt = pub.bossDealt || 0;
+  return `<div class="forecast">
+    <p class="small"><strong>⚔ 中庭決戰預估</strong></p>
+    <ul class="small plain">
+      <li>恢復等級 <strong>${rec} / 3</strong>：決戰時大家 HP 上限 +${rec * 2}、命中 +${rec}。<span class="muted">${next}</span></li>
+      <li>${g.atk ? `你帶著裝備（命中 +${g.atk}），` : ''}對怪物的一般攻擊命中率：<strong>${now}%</strong>${rec ? `<span class="muted">（沒有點燈加成時 ${base}%）</span>` : ''}</li>
+      ${dealt ? `<li>屋內已經打掉怪物 <strong>${dealt}</strong> 點 HP，決戰時會直接扣掉。</li>` : ''}
+    </ul>
+    <p class="muted small">恢復等級看的是「同時亮著」最多幾間，熄掉之後等級不會掉。怪物的 HP 還會被偷走的燭台、怪物陣營撿到的裝備影響，開戰時才揭曉。</p>
+  </div>`;
+}
+
 function turnBanner(pub){
   if (pub.phase === 'over') return '';
   const total = pub.seats.length;
@@ -1351,6 +1510,8 @@ function guideHtml(section){
       <h3>白天：輪流行動</h3>${ul([
         `每個人輪流，每回合有 ${RULES.apPerTurn} 點行動點。限時模式上方有倒數，時間到會自動換下一位；不限時模式沒有倒數，有人卡住時房主可以推進。`,
         '行動點用完會自動結束回合，也可以提早按「結束回合」。',
+        '每一輪由下一位先開始（這輪第一個動的人，下一輪會排到最後），所以有時候會等比較久。橫幅下方的「行動順序」會列出這一輪誰先誰後、誰已經動過、再幾位輪到你；雷雨時會先預告下一輪的順序。',
+        '被作祟、受重傷昏倒、被嚇到，或行動點被扣光，下一回合會被跳過。順序表上會先標「會跳過」，紀錄裡也會寫出原因。',
       ])}
       <h3>雷雨：每 ${RULES.stormEvery} 輪一次</h3>${ul([
         '雷雨前一輪會出現「遠方傳來雷聲」的預告，趁這時候站好位置、鎖好門。',
@@ -1360,17 +1521,22 @@ function guideHtml(section){
       ])}
       <h3>雷雨過後：檢查封印</h3>${ul([
         `封印房亮著，而且同類的房間（作物、墓園、月光）另外亮著 ${sealNeedText()} 間以上，那道封印就會解開。`,
-        '條件要撐過雷雨才算數，所以雷雨前要守好這些房間。',
+        '右側的封印進度寫「作物房亮著 1/2」這種格式：後面是需要幾間（不含封印房本身），前面是現在亮著幾間。前後一樣就是條件夠了，不用再點。',
+        '雷雨的結算順序：① 怪物熄燈 → ② 風隨機吹熄一盞真的燈 → ③ 怪物的假燈全部消失 → ④ 檢查封印。所以畫面上「夠了」不代表穩了：假燈看起來跟真的一樣，也可能被熄掉。',
+        '保險的做法：同類的房間多點一間當備用；用鑰匙鎖住封印房或關鍵的房間（上鎖的房間怪物熄不了，風也吹不熄）；巫師可以用封印結界守住封印房。',
       ])}
       <h3>中庭決戰</h3>${ul([
         '三道封印都解開後開始，所有人的身份公開。',
         coop ? '深淵的怪物由程式操控。' : '怪物玩家親自操控深淵的怪物，魔人在旁邊幫忙。',
-        '點亮過的房間越多、找到的裝備越多，大家在決戰中越強。',
+        `<strong>恢復等級</strong>：看的是「同時亮著」最多幾間房。每同時亮過 ${RULES.recoveryStep} 間升一級（最多 3 級），每一級讓大家在決戰時 HP 上限 +2、命中 +1。房間之後被熄掉，等級也不會掉。`,
+        '右側的「中庭決戰預估」會顯示目前的恢復等級、下一級還差幾間，以及你打中怪物的機率（跟沒點燈時比較）。',
+        '找到的裝備越多、屋內打在狂暴怪物身上的傷害越多，決戰越好打；被偷走的燭台、怪物陣營撿到的裝備會讓怪物變強，這兩項要開戰才揭曉。',
       ])}`,
     ops: `
       <h3>輪到你的時候（白天）</h3>${ul([
         '<strong>點燈（1 點）</strong>：先按「點燈」進入點燈模式，再點地圖上標著「點亮」的格子。要有燭台或火柴。標著「受潮」的房間要點兩次：第一次烘乾燈芯，第二次才會亮（每次 1 點，可以分開點，也可以由不同人接力）。',
         `<strong>探索（1 點）</strong>：點地圖上發光的「點亮的黑暗」，走進去擲 1D20：1–2 遇到災獸、3–5 特殊事件、${sealRollText()}，其餘是一般房間。`,
+        `<strong>災獸</strong>：擲 1D20＋命中加成，${RULES.beastDC} 以上就把牠趕走；沒趕走會受 1D6 傷害（護甲可以減），而且有 ${RULES.beastDropAt * 5}% 的機率在混亂中弄掉燭台。`,
         '<strong>移動（1 點）</strong>：點相鄰、外框是虛線的房間。沒有燭台也能摸黑走進暗房，但會擲骰遇到事件：可能受傷、被嚇到，也可能摸到火柴或燭台。',
         '<strong>摸黑搜索（1 點）</strong>：在暗房裡也能搜索，比亮著的房間危險，但更容易摸到燭台。',
         `<strong>燭光經驗（全隊共用）</strong>：大家一共點亮的燈越多，搜索時越容易多找到一件裝備（每 ${RULES.lightBonusStep} 盞多 1/6 機會，最多 ${RULES.lightBonusMax}/6）。不記錄是誰點的。`,
@@ -1388,9 +1554,10 @@ function guideHtml(section){
       <h3>中庭決戰</h3>${ul([
         '每回合所有人同時選行動，時間到沒選會自動攻擊。',
         '人類可以：攻擊、守護隊友、燭火（消耗燭台，必中 2D6）、穩住心神（回復理智）、丟火柴（燒傷 1D6，這回合怪物防禦 -2，大家更容易命中）。',
-        '裝備會變成技能：收割者的鐮刀「收割」（命中造成 2D6）、稻草人的厚斗篷「斗篷庇護」（全隊這回合受傷 -2）、黑貓骨墜「黑貓的呼嚕」（全隊理智 +1D10、瘋狂的人清醒）、屬於自己的裝備「找回原本的力量」（必中 3D6）。巫師另有「結界束縛」：讓怪物這回合的招式失效。',
+        '裝備會變成技能：收割者的鐮刀「收割」（命中造成 2D6）、稻草人的厚斗篷「斗篷庇護」（全隊這回合受傷 -2）、黑貓骨墜「黑貓的呼嚕」（全隊理智 +1D10、瘋狂的人清醒）、屬於自己的裝備「找回原本的力量」（必中 3D6）。找到裝備時有很小的機率其實是一瓶恢復藥水：決戰時可以自己喝或餵給隊友，回復 5 HP。巫師另有「結界束縛」：讓怪物這回合的招式失效。',
         '怪物陣營撿到的裝備和火柴，決戰時會讓深淵的怪物更強（HP、攻擊、防禦都會上升）。',
-        'HP 歸零會倒下；理智歸零會陷入瘋狂，開始亂打人。',
+        `理智一開始是 ${RULES.baseSan}（黑貓骨墜 +10）。屋內被嚇到會扣 1D${RULES.sanDownDie}，但不會在屋內瘋掉。見到怪物時要做理智檢定：擲 1D100，小於等於目前理智就成功（扣 1D3），失敗扣 1D20；怪物的低語也一樣，失敗扣 1D${RULES.whisperFail}。理智越低越容易失敗。`,
+        'HP 歸零會倒下；理智歸零會陷入瘋狂，每回合隨機攻擊怪物或隊友。黑貓的呼嚕可以讓瘋掉的人清醒。',
       ])}`,
     legend: `
       <h3>地圖</h3>${ul([
@@ -1398,12 +1565,14 @@ function guideHtml(section){
         '虛線發光的格子「點亮的黑暗」：已經點亮、還沒探索，可以走進去探索。',
         '雙線外框：封印房。',
         '「受潮」：被怪物熄過，要點兩次才會亮（第一次烘乾燈芯）。「已搜」：要等雷雨過後才能再搜。「翻遍」：這間不能再搜了。🔒：上鎖。',
+        '房間卡翻完之後出現的房間叫「無名的房間 1、2、3…」，用編號分辨。',
         '外框虛線的格子：這回合可以點的地方。',
         '頭像外圈紅色：理智崩潰、身份已經曝光的怪物。',
       ])}
       <h3>畫面</h3>${ul([
         '上方：第幾輪、雷雨次數與上限、倒數秒數、三道封印（亮起代表已解開）。',
-        '右側：你的身份與燭台、操作按鈕、所有人的狀態、封印進度。',
+        '橫幅下方：這一輪的行動順序（可以點標題收起來）。',
+        '右側：你的身份與燭台、操作按鈕、所有人的狀態、封印進度、中庭決戰預估。',
         '跳出來的「只有你看得到」訊息：燭台被偷、巫師看到的結果、瞥見的身影……看完按「知道了」。',
       ])}
       <h3>聊天</h3>${ul([
@@ -1411,6 +1580,11 @@ function guideHtml(section){
         '玩家討論：場外推理，不會被匯出。',
         '狼人頻道：只有怪物陣營看得到。觀眾席：只有觀眾看得到，遊戲結束後公開。',
         '匯出噗浪格式：把劇情切成每則 300 字以內，照順序貼回噗浪。',
+        '分頁旁邊亮起燭火色的數字，代表那個頻道有你還沒看的新訊息；瀏覽器分頁標題也會顯示未讀數。',
+      ])}
+      <h3>一局結束後</h3>${ul([
+        '結局畫面下方有「下一局名單」：新玩家可以直接用房間代碼加入，觀眾可以按「我要上場」，也可以新增或移除副角色。',
+        '房主按「再玩一局」就會用名單上的人開新局；要改模式或速度時再按「回到大廳」。',
       ])}`,
   };
   return `<h2>遊戲指南</h2>
@@ -1476,9 +1650,9 @@ function mapView(pub){
       if (k === here) cls.push('here');
       if (act) cls.push('reach');
       const flags = [C.seal ? `${C.tag}封印房` : C.tag, ((pub.searchCount || {})[k] || 0) >= RULES.searchLimit ? '翻遍' : pub.searched[k] ? '已搜' : '', c.wet ? '受潮' : '', act && act.label ? act.label : ''].filter(Boolean).join(' ');
-      cells += `<${Tag} class="${cls.join(' ')}" ${attrs} aria-label="${esc(C.name)}${c.lit ? '' : '（暗）'}">
+      cells += `<${Tag} class="${cls.join(' ')}" ${attrs} aria-label="${esc(c.label || C.name)}${c.lit ? '' : '（暗）'}">
         ${pub.locks[k] ? '<span class="lock" title="上鎖了">🔒</span>' : ''}${fakes.has(k) ? '<span class="fake">假</span>' : ''}
-        <span class="rname">${esc(C.name)}</span><span class="rtag">${esc(flags)}</span>
+        <span class="rname">${esc(c.label || C.name)}</span><span class="rtag">${esc(flags)}</span>
         <span class="rfoot"><span class="flame ${c.lit ? 'on' : ''}"></span><span class="tokens">${who}</span></span></${Tag}>`;
     }
   }
@@ -1572,7 +1746,7 @@ function panelView(pub){
         ${foes.length ? `<p class="small role-monster">曝光的怪物就在這間房！攻擊命中會造成傷害，累積 ${RULES.stunAt} 點就能壓制牠；沒打中會被反擊。</p>` : ''}
         ${!human ? '<p class="muted small">你沒有鑰匙，不能鎖門。</p>' : `<div class="row lockrow">
           <div class="field"><label for="lockTarget">鑰匙（每次雷雨之間一次；上次雷雨鎖過的房間這次不能鎖）</label>
-            <select id="lockTarget" ${st.lockUsed ? 'disabled' : ''}>${lockable.map(k => `<option value="${k}" ${k === here ? 'selected' : ''}>${esc(CARDS[pub.map[k].card].name)}</option>`).join('')}</select></div>
+            <select id="lockTarget" ${st.lockUsed ? 'disabled' : ''}>${lockable.map(k => `<option value="${k}" ${k === here ? 'selected' : ''}>${esc(cellLabel(pub, k))}${k === here ? '（你在這）' : ''}</option>`).join('')}</select></div>
           <button class="btn" data-act="lock" ${st.lockUsed || !lockable.length || ui.busy ? 'disabled' : ''}>${st.lockUsed ? '已用過' : '上鎖'}</button>
         </div>`}`;
     } else {
@@ -1586,7 +1760,8 @@ function panelView(pub){
     top = `<div class="result"><h2>${pub.winner === 'humans' ? '人類陣營獲勝' : '怪物獲勝'}</h2></div>
       <ul class="roles">${pub.seats.map(p => { const info = ROLE_INFO[pub.roles[p.id]]; return `<li>${tok(p.id)}${esc(p.name)}<span class="${info.cls}">${info.name}</span></li>`; }).join('')}</ul>
       <div class="choices">${pub.ending ? '<button class="btn" data-act="showEnding">看結局</button>' : ''}<button class="btn" data-act="openSave">存檔與紀錄</button></div>
-      <div class="choices">${isHost() || app.mode === 'local' ? `<button class="btn primary" data-act="again" ${Bz}>同一批人再玩一局</button><button class="btn" data-act="toLobby">回到大廳</button>` : '<p class="muted small">等房主開新的一局，或回到大廳調整角色。</p>'}
+      ${nextRoundHtml(pub)}
+      <div class="choices">${isHost() || app.mode === 'local' ? `<button class="btn primary" data-act="again" ${Bz}>再玩一局（${app.mode === 'online' ? roomSeatOrder().length : seatOrder().length} 人）</button><button class="btn" data-act="toLobby">回到大廳</button>` : '<p class="muted small">等房主開新的一局。</p>'}
         <button class="btn quiet" data-act="leave">離開房間</button></div>`;
   }
 
@@ -1611,7 +1786,8 @@ function panelView(pub){
     return `<li><span>${se.icon}</span><span>${txt}</span></li>`;
   }).join('')}</ul>
   <p class="small">🕯 全隊一共點亮過 ${pub.totalLights || 0} 盞燈（燭光經驗 ${Math.min(RULES.lightBonusMax, Math.floor((pub.totalLights || 0) / RULES.lightBonusStep))}：搜索時多找到裝備的機會 +${Math.min(RULES.lightBonusMax, Math.floor((pub.totalLights || 0) / RULES.lightBonusStep))}/6）</p>
-  <p class="muted small">封印在雷雨過後檢查。同時亮著的房間越多，大家恢復得越多（目前恢復等級 ${pub.recovery}，會帶進中庭決戰）。</p>`;
+  ${battleForecast(pub)}
+  <p class="muted small">封印在雷雨過後檢查。</p>`;
   if (pub.paused) top = `<div class="pausebox"><h2>遊戲暫停中</h2><p class="small">${pub.paused.auto ? '線上的玩家不夠，遊戲自動暫停，倒數也停住。有第二位玩家回來就會自動繼續。' : '房主暫停了遊戲，倒數也一起停住。'}聊天照常可以用。</p></div>`;
   return `${myBlock(pub)}${top}${hostBox(pub)}${ui.toast ? `<p class="toast" role="alert">${esc(ui.toast)}</p>` : ''}${statusList}${progress}`;
 }
@@ -1718,7 +1894,7 @@ function stormPanel(pub, me){
     const sealRooms = Object.keys(pub.map).filter(k => pub.map[k].explored && CARDS[pub.map[k].card].seal && !pub.seals[CARDS[pub.map[k].card].seal]);
     const sealWard = me.sealWards > 0
       ? `<p class="small"><strong>封印結界</strong>（還剩 ${me.sealWards} 次）：守護一間封印房，這次雷雨它不會熄滅，連雷雨的風都吹不熄。</p>
-        ${pickRow('sealWard', sealRooms.map(k => [k, CARDS[pub.map[k].card].name + (pub.map[k].lit ? '' : '（暗）')]), '守護這間', '目前沒有需要守護的封印房')}`
+        ${pickRow('sealWard', sealRooms.map(k => [k, cellLabel(pub, k) + (pub.map[k].lit ? '' : '（暗）')]), '守護這間', '目前沒有需要守護的封印房')}`
       : '<p class="small muted">封印結界已經用過了。</p>';
     const left = (me.wards || 0) + (me.sealWards || 0);
     return `<h2 class="role-witch">雷雨來了，要怎麼做？</h2><p class="small">看見真實、守護結界、封印結界，一次雷雨只能選一個。${left ? `沒用完的結界（現在 ${left} 次）會在中庭決戰變成束縛怪物的力量。` : ''}</p>${eye}${ward}${sealWard}${btn('none', '', '這次都不用', 'quiet')}`;
@@ -1750,7 +1926,9 @@ function battlePanel(pub, me){
       </div>
       <p class="small muted">丟火柴：燒傷 1D6，火光照出弱點，這回合怪物防禦 -2（兩人以上一起丟最多 -4），大家更容易命中。</p>
       ${skillList.length ? `<p class="small"><strong>裝備技能</strong></p>
-      <div class="choices">${skillList.map(([k, n]) => btn(k, '', `${SKILLS[k].name}（剩 ${n} 次）`, 'skill', !n)).join('')}</div>
+      <div class="choices">${skillList.filter(([k]) => k !== 'potion').map(([k, n]) => btn(k, '', `${SKILLS[k].name}（剩 ${n} 次）`, 'skill', !n)).join('')}</div>
+      ${skillList.some(([k]) => k === 'potion') ? (() => { const n = b.skills[id].potion; return `<p class="small">恢復藥水（剩 ${n} 瓶）給誰喝？</p>
+      <div class="choices">${living.map(h => btn('potion', h, h === id ? '自己喝' : esc(nameOf(h)), 'skill', !n)).join('')}</div>`; })() : ''}
       <ul class="small muted plain">${skillList.map(([k]) => `<li>${SKILLS[k].name}：${SKILLS[k].desc}</li>`).join('')}</ul>` : '<p class="small muted">找到裝備的話，決戰時會多出技能可以用。</p>'}
       <p class="small"><strong>守護</strong>：替隊友擋下這回合的攻擊，自己護甲 +2。</p>
       <div class="choices">${living.filter(h => h !== id).map(h => btn('guard', h, esc(nameOf(h)))).join('')}</div>
@@ -1764,7 +1942,7 @@ function battlePanel(pub, me){
       <div class="choices">${living.map(h => btn('bite', h, esc(nameOf(h)))).join('')}</div>
       <div class="choices">
         ${btn('sweep', '', b.cd.sweep ? `橫掃（冷卻 ${b.cd.sweep}）` : `橫掃（全體 1D6+${RULES.sweepBonus}）`, '', !!b.cd.sweep)}
-        ${btn('whisper', '', b.cd.whisper ? `低語（冷卻 ${b.cd.whisper}）` : '低語（全體理智檢定）', '', !!b.cd.whisper)}
+        ${btn('whisper', '', b.cd.whisper ? `低語（冷卻 ${b.cd.whisper}）` : '低語（全體理智檢定，失敗 -1D20）', '', !!b.cd.whisper)}
       </div>
       <p class="small muted">時間到沒選的話，怪物會自己行動。</p>`;
   }
@@ -1784,6 +1962,24 @@ function storyItems(pub){
   const ic = app.ic.map((m, i) => ({ ts:m.ts || 0, ord:100000 + i, sys:false, uid:m.uid, text:m.text }));
   return sys.concat(ic).sort((a, b) => a.ts - b.ts || a.ord - b.ord);
 }
+// 未讀訊息：每個頻道記住「看到哪裡」，沒看過的別人訊息會讓分頁亮燈
+const chanList = tab => tab === 'story' ? app.ic : tab === 'ooc' ? app.ooc : tab === 'wolf' ? app.wolf : tab === 'spec' ? app.spec : [];
+const lastTs = list => list.reduce((m, x) => Math.max(m, x.ts || 0), 0);
+function unreadOf(tab){
+  const list = chanList(tab) || [];
+  // 剛進房：之前的訊息不算未讀（聊天紀錄可能比畫面晚一點載入，所以用「現在」當起點）
+  if (ui.seen[tab] === undefined){ ui.seen[tab] = Math.max(lastTs(list), Date.now() - 5000); return 0; }
+  return list.filter(m => (m.ts || 0) > ui.seen[tab] && !isMine(m.uid) && m.uid !== app.uid).length;
+}
+function markSeen(tab){ if (!document.hidden) ui.seen[tab] = Math.max(ui.seen[tab] || 0, lastTs(chanList(tab) || [])); }
+function tabBtn(tab, label, active, extra = ''){
+  const n = active ? 0 : unreadOf(tab);
+  return `<button class="tab ${extra} ${n ? 'unread' : ''}" role="tab" aria-selected="${active}" data-act="tab" data-tab="${tab}">${label}${n ? `<span class="badge" aria-label="${n} 則未讀">${n > 99 ? '99+' : n}</span>` : ''}</button>`;
+}
+function updateTitle(total){ const t = total ? `(${total}) 荒中小屋` : '荒中小屋'; if (document.title !== t) document.title = t; }
+document.addEventListener('toggle', e => { if (e.target && e.target.classList && e.target.classList.contains('orderstrip')) ui.orderClosed = !e.target.open; }, true);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && app.code) render(); });
+
 function chatView(pub){
   const role = meRole();
   const wolfTab = isMonsterSide(role) || (pub.phase === 'over' && app.wolf.length);
@@ -1809,11 +2005,14 @@ function chatView(pub){
     spec: pub.phase === 'over' ? '遊戲結束，觀眾席公開了。' : '只有觀眾看得到，玩家要等遊戲結束才看得到，免得有人報牌。',
   }[tab];
   const noteText = spec && tab !== 'spec' ? '觀眾只能看，不能在這裡發言。' : note;
+  const tabs = [['story', '劇情與角色 RP'], ['ooc', '玩家討論']].concat(wolfTab ? [['wolf', '狼人頻道', 'wolf']] : [], specTab ? [['spec', '觀眾席']] : []);
+  const tabHtml = tabs.map(([k, label, extra]) => tabBtn(k, label, k === tab, extra)).join('');
+  // 目前開著的分頁：視窗在前景時算已讀；切到別的視窗時，新訊息數會顯示在瀏覽器分頁標題上
+  const activeUnread = document.hidden ? unreadOf(tab) : 0;
+  markSeen(tab);
+  updateTitle(tabs.reduce((a, [k]) => a + (k === tab ? activeUnread : unreadOf(k)), 0));
   return `<div class="tabs" role="tablist">
-      <button class="tab" role="tab" aria-selected="${tab === 'story'}" data-act="tab" data-tab="story">劇情與角色 RP</button>
-      <button class="tab" role="tab" aria-selected="${tab === 'ooc'}" data-act="tab" data-tab="ooc">玩家討論</button>
-      ${wolfTab ? `<button class="tab wolf" role="tab" aria-selected="${tab === 'wolf'}" data-act="tab" data-tab="wolf">狼人頻道</button>` : ''}
-      ${specTab ? `<button class="tab" role="tab" aria-selected="${tab === 'spec'}" data-act="tab" data-tab="spec">觀眾席</button>` : ''}
+      ${tabHtml}
       <button class="btn quiet" data-act="export">匯出噗浪格式</button>
     </div>
     <div class="feed" id="feed" aria-live="polite">${items}</div>
@@ -1883,7 +2082,7 @@ $app.addEventListener('click', async e => {
     case 'takeSeat': Online.takeSeat(); break;
     case 'pause': send({ type:'pause' }); break;
     case 'resume': send({ type:'resume' }); break;
-    case 'force': if (window.confirm(`確定要${d.label}嗎？還沒行動的人會自動算成不行動（決戰時人類自動攻擊）。`)) send({ type:'force' }); break;
+    case 'force': { const fx = app.pub ? L.stepKey(app.pub) : ''; if (window.confirm(`確定要${d.label}嗎？還沒行動的人會自動算成不行動（決戰時人類自動攻擊）。`)) send({ type:'force', expect:fx }); break; }
     case 'evClose': ui.evDismissed = app.pub && app.pub.lastEvent ? app.pub.lastEvent.id : 0; render(); break;
     case 'togglePin': ui.showPin = !ui.showPin; render(); break;
     case 'reclaim': {
@@ -1898,7 +2097,7 @@ $app.addEventListener('click', async e => {
       const nm = document.getElementById('altName').value.trim();
       if (!nm){ ui.toast = '請輸入副角色名字'; render(); break; }
       if (Object.values(app.seats).some(x => x.name === nm)){ ui.toast = '這個名字已經有人用了'; render(); break; }
-      Online.addAlt(nm); break;
+      document.getElementById('altName').value = ''; Online.addAlt(nm); break;
     }
     case 'removeAlt': Online.removeAlt(); break;
     case 'swapAlt': Online.swapAlt(); break;
@@ -1918,7 +2117,7 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'addSeat': {
-      const el = document.getElementById('seatName'); const nm = el.value.trim();
+      const el = document.getElementById('seatName'); const nm = el.value.trim(); el.value = '';
       if (!nm){ ui.toast = '請輸入玩家名字'; render(); break; }
       ui.toast = ''; Local.addSeat(nm); ui.refocus = 'seatName'; render();
       break;
@@ -1938,16 +2137,17 @@ $app.addEventListener('click', async e => {
     case 'lightMode': ui.lightMode = !ui.lightMode; render(); break;
     case 'search': send({ type:'search' }); break;
     case 'attack': send({ type:'attack', target:d.id }); break;
-    case 'lock': send({ type:'lock', target:document.getElementById('lockTarget').value }); break;
+    case 'lock': delete ui.sel.lockTarget; send({ type:'lock', target:document.getElementById('lockTarget').value }); break;
     case 'endTurn': ui.lightMode = false; ui.endedByMe = true; send({ type:'endTurn' }); break;
-    case 'stormBash': { const el = document.getElementById('pick-bash'); if (el && el.value){ const [then, target] = el.value.split('|'); send({ type:'stormAction', kind:'bash', then, target }); } break; }
-    case 'stormPick': { const el = document.getElementById('pick-' + d.kind); if (el && el.value) send({ type:'stormAction', kind:d.kind, target:el.value }); break; }
+    case 'stormBash': { const el = document.getElementById('pick-bash'); if (el && el.value){ delete ui.sel['pick-bash']; const [then, target] = el.value.split('|'); send({ type:'stormAction', kind:'bash', then, target }); } break; }
+    case 'stormPick': { const el = document.getElementById('pick-' + d.kind); if (el && el.value){ delete ui.sel['pick-' + d.kind]; send({ type:'stormAction', kind:d.kind, target:el.value }); } break; }
     case 'storm': send({ type:'stormAction', kind:d.kind, target:d.target || '' }); break;
     case 'battle': send({ type:'battleAction', act:d.a, target:d.target || '' }); break;
     case 'showCard': ui.guide = null; ui.showCard = true; render(); break;
     case 'avUrl': {
       const u = document.getElementById('avUrl').value.trim();
       if (!validAvatarUrl(u)){ ui.homeErr = ui.toast = '請貼上 https:// 開頭的圖片網址'; render(); break; }
+      document.getElementById('avUrl').value = '';
       applyAvatar(d.for || app.uid, document.getElementById('avUrlSlot').value, u); break;
     }
     case 'emoOpen': ui.emoting = true; ui.emoteFor = d.for || (app.code ? app.uid : null); render(); break;
@@ -1987,6 +2187,7 @@ $app.addEventListener('click', async e => {
   }
 });
 $app.addEventListener('change', e => {
+  if (e.target.tagName === 'SELECT' && e.target.id && e.target.id !== 'viewAs') ui.sel[e.target.id] = { v:e.target.value, k:turnKey() };
   if (e.target.id === 'viewAs') Local.switchSeat(e.target.value);
   if (e.target.id === 'loadFile' && e.target.files[0]) loadSaveFile(e.target.files[0]);
   if (e.target.classList && e.target.classList.contains('avfile') && e.target.files[0]){

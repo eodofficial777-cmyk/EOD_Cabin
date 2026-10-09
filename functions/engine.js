@@ -41,9 +41,10 @@ const RULES = {
   lightBonusMax: 2,      // 最多 +2/6
   attackDC: 12,          // 白天攻擊曝光的怪物：1D20 + 命中加成 ≥ 這個數字就命中
   stunAt: 10,            // 怪物在屋內累積受到這麼多傷害，就會被壓制（下次雷雨不能作祟、下回合不能行動）
+  beastDropAt: 2,        // 被災獸打傷時再擲 1D20，小於等於這個數字才會弄掉燭台（原本 5，約 25%；現在 10%）
   beastDC: 12,           // 遭遇災獸：1D20 + 命中加成 ≥ 這個數字就擊退
   baseHp: 20,
-  baseSan: 50,
+  baseSan: 35,
   recoveryStep: 5,       // 同時點亮的房間每多這麼多間，恢復等級 +1（最多 3）
   bossHp: 50,            // 原版設定：HP 50
   bossDefBase: 8,        // 原版設定：DEF 1D10 + 護甲 8
@@ -60,6 +61,10 @@ const RULES = {
   sweepBonus: 2,         // 橫掃傷害 1D6 + 這個數字
   sweepCooldown: 2,
   whisperCooldown: 2,
+  potionDie: 10,         // 找到裝備時擲 1D(這個數字)，擲出 1 就變成恢復藥水（跟裝備同一個池子，機率很低）
+  potionHeal: 5,         // 恢復藥水回復的 HP
+  sanDownDie: 10,        // 探索時嚇到：理智 -1D(這個數字)
+  whisperFail: 20,       // 怪物低語檢定失敗：理智 -1D(這個數字)
   chatMax: 200,
   plurkLimit: 300,
   monstersFor: n => n >= 8 ? 2 : 1,
@@ -102,6 +107,31 @@ const CARDS = {
   candle_store:   { name:'燭台儲藏室',   tag:null,   table:'common' },
   piano_room:     { name:'落灰琴房',     tag:null,   table:'common' },
   soup_kitchen:   { name:'熬湯灶間',     tag:null,   table:'common' },
+  // 擴充房間：比例和原本一樣（作物 : 墓園 : 月光 : 一般 ≈ 4 : 5 : 4 : 6），人多時比較不會翻到重複的「無名的房間」
+  corn_maze:      { name:'玉米迷宮',     tag:'作物', table:'crop' },
+  cider_cellar:   { name:'蘋果酒窖',     tag:'作物', table:'crop' },
+  hay_loft:       { name:'乾草閣樓',     tag:'作物', table:'crop' },
+  caramel_oven:   { name:'焦糖烤爐間',   tag:'作物', table:'crop' },
+  gourd_trellis:  { name:'葫蘆藤架',     tag:'作物', table:'crop' },
+  ossuary:        { name:'地下納骨堂',   tag:'墓園', table:'grave' },
+  hearse_house:   { name:'送葬馬車房',   tag:'墓園', table:'grave' },
+  stone_shop:     { name:'墓碑工坊',     tag:'墓園', table:'grave' },
+  wake_hall:      { name:'守靈廳',       tag:'墓園', table:'grave' },
+  dead_tree_path: { name:'枯樹墓道',     tag:'墓園', table:'grave' },
+  crow_chapel:    { name:'烏鴉禮拜堂',   tag:'墓園', table:'grave' },
+  star_deck:      { name:'觀星台',       tag:'月光', table:'moon' },
+  howl_terrace:   { name:'狼嚎露台',     tag:'月光', table:'moon' },
+  mercury_bath:   { name:'水銀浴室',     tag:'月光', table:'moon' },
+  bird_cage_room: { name:'夜鶯鳥籠間',   tag:'月光', table:'moon' },
+  moon_corridor:  { name:'望月走廊',     tag:'月光', table:'moon' },
+  toy_room:       { name:'舊玩具房',     tag:null,   table:'common' },
+  laundry:        { name:'洗衣間',       tag:null,   table:'common' },
+  portrait_hall:  { name:'肖像畫廊',     tag:null,   table:'common' },
+  sewing_room:    { name:'縫紉間',       tag:null,   table:'common' },
+  servant_room:   { name:'傭人房',       tag:null,   table:'common' },
+  coal_room:      { name:'煤炭間',       tag:null,   table:'common' },
+  billiard_room:  { name:'撞球間',       tag:null,   table:'common' },
+  specimen_room:  { name:'標本室',       tag:null,   table:'common' },
   // 封印房（探索擲到 19 以上）
   altar_pumpkin:  { name:'南瓜祭壇',     tag:'作物', table:'crop',  seal:'pumpkin' },
   bell_tower:     { name:'骨鐘塔',       tag:'墓園', table:'grave', seal:'bell' },
@@ -120,6 +150,7 @@ const GEAR = {
   armor:  { name:'稻草人的厚斗篷', atk:0, dmg:0, armor:1, san:0 },
   charm:  { name:'黑貓骨墜',       atk:0, dmg:0, armor:0, san:10 },
   own:    { name:'屬於自己的裝備', atk:1, dmg:2, armor:1, san:5 },
+  potion: { name:'恢復藥水',       atk:0, dmg:0, armor:0, san:0 },
 };
 
 // 裝備在中庭決戰提供的技能：每件裝備給對應技能的使用次數
@@ -128,6 +159,7 @@ const SKILLS = {
   cover:    { gear:'armor',  name:'斗篷庇護',       perItem:1, desc:'展開斗篷擋在大家前面：這回合所有隊友受到的傷害 -2' },
   soothe:   { gear:'charm',  name:'黑貓的呼嚕',     perItem:1, desc:'骨墜裡傳來貓的呼嚕聲：全體隊友理智 +1D10，陷入瘋狂的人會清醒過來' },
   ultimate: { gear:'own',    name:'找回原本的力量', perItem:1, desc:'必中，造成 3D6 傷害' },
+  potion:   { gear:'potion', name:'恢復藥水',       perItem:1, desc:'自己喝或餵給一位還站著的隊友：回復 5 HP（不超過上限），這回合不能攻擊' },
   bind:     { gear:null,     name:'結界束縛',       perItem:0, desc:'巫師把雷雨時沒用完的結界之力纏到怪物身上：這回合牠選的招式失效（甩尾照樣會來）' },
 };
 
@@ -140,7 +172,7 @@ const BEASTS = {
 };
 
 // 特殊事件：探索擲到 3–5，再擲 1D6 查表
-// fx：none / ap 多一點行動 / chill 隨機一間房暗掉 / lightNear 相鄰的暗房亮起 / warp 傳送 / stop 回合結束 / sanDown 理智 -1D6 / heal 回復 1D6 HP
+// fx：none / ap 多一點行動 / chill 隨機一間房暗掉 / lightNear 相鄰的暗房亮起 / warp 傳送 / stop 回合結束 / sanDown 理智 -1D10 / heal 回復 1D6 HP
 const EVENTS = {
   common: [
     { t:'一陣冷風穿過走廊。', fx:'chill' },
@@ -387,8 +419,10 @@ function step(key, dir){ const [x,y] = key.split(',').map(Number); const [dx,dy]
 function adj(key){ return Object.keys(DIRS).map(dir => step(key, dir)); }
 function isAdj(a, b){ return adj(a).includes(b); }
 function cur(st){ return st.turnOrder[st.turnIdx]; }
+// 目前進行到哪一步：用來確認「推進」針對的是同一個人、同一個階段
+function stepKey(st){ return [st.phase, st.round, st.turnIdx, st.storms, st.battle ? st.battle.round : 0].join('|'); }
 function nameOf(st, id){ const p = st.seats.find(x => x.id === id); return p ? p.name : '?'; }
-function roomName(st, key){ const c = st.map[key]; return c && c.explored ? CARDS[c.card].name : '一片黑暗'; }
+function roomName(st, key){ const c = st.map[key]; return c && c.explored ? (c.label || CARDS[c.card].name) : '一片黑暗'; }
 function log(s, text, kind = ''){
   s.log.push({ text, kind, ts: s.now || Date.now() });
   if (s._ev && !s._ev.closed && kind !== 'turn') s._ev.lines.push(text);
@@ -478,12 +512,12 @@ function startRound(s){
 function beginTurn(s){
   while (s.turnIdx < s.turnOrder.length){
     const id = cur(s), st = s.status[id], nm = nameOf(s, id);
-    if (st.skip){ st.skip = false; log(s, `${nm} 還沒回過神來，跳過這回合。`); s.turnIdx++; continue; }
+    if (st.skip){ log(s, `${nm} ${st.skipWhy || '還沒回過神來'}，跳過這回合。`); st.skip = false; st.skipWhy = null; s.turnIdx++; continue; }
     s.ap = Math.max(0, RULES.apPerTurn + st.apMod);
     if (st.apMod > 0) log(s, `${nm} 這回合多 ${st.apMod} 點行動點。`);
     if (st.apMod < 0) log(s, `${nm} 這回合少 ${-st.apMod} 點行動點。`);
     st.apMod = 0;
-    if (s.ap === 0){ log(s, `${nm} 沒有力氣行動。`); s.turnIdx++; continue; }
+    if (s.ap === 0){ log(s, `${nm} 的行動點被扣光了，這回合沒有力氣行動。`); s.turnIdx++; continue; }
     log(s, `輪到 ${nm}。`, 'turn');
     setDeadline(s, s.settings.turnSec);
     return;
@@ -518,12 +552,20 @@ function hurt(s, id, dmg){
   st.hp -= dmg;
   if (st.hp <= 0){
     st.hp = 1;
-    s.status[id].skip = true;
+    s.status[id].skip = true; s.status[id].skipWhy = '受了重傷昏過去';
     log(s, `${nameOf(s,id)} 受了重傷昏過去，下回合不能行動。`);
   }
 }
 function loseSan(s, id, n){ const st = s.stats[id]; st.san = Math.max(1, st.san - n); }
-function gainGear(s, id, g){ s.stats[id].gear.push(g); log(s, `${nameOf(s,id)} 得到了「${GEAR[g].name}」。`); }
+function gainGear(s, id, g){
+  // 恢復藥水跟裝備混在同一個池子：找到裝備時有很小的機率其實是藥水
+  if (['weapon','armor','charm'].includes(g) && d(s, RULES.potionDie) === 1){
+    s.stats[id].gear.push('potion');
+    log(s, `${nameOf(s,id)} 再看一眼，手上的東西變成了一瓶「${GEAR.potion.name}」。`);
+    return;
+  }
+  s.stats[id].gear.push(g); log(s, `${nameOf(s,id)} 得到了「${GEAR[g].name}」。`);
+}
 
 function applyFx(s, seat, fx){
   const nm = nameOf(s, seat), st = s.status[seat];
@@ -532,7 +574,7 @@ function applyFx(s, seat, fx){
     case 'apUp': st.apMod += 1; log(s, `${nm} 下回合行動點 +1。`); break;
     case 'apDown': st.apMod -= 1; log(s, `${nm} 下回合行動點 -1。`); break;
     case 'stop': s.ap = 0; log(s, `${nm} 這回合不能再行動。`); break;
-    case 'skipNext': st.skip = true; log(s, `${nm} 下回合不能行動。`); break;
+    case 'skipNext': st.skip = true; st.skipWhy = '被嚇得還沒回過神來'; log(s, `${nm} 下回合不能行動。`); break;
     case 'curse': st.cursed = true; log(s, `${nm} 被詛咒了，下次雷雨時不能使用能力。`); break;
     case 'match': st.matches++; log(s, `${nm} 拿到一根火柴，沒有燭台也能點一次燈。`); break;
     case 'candle':
@@ -545,7 +587,7 @@ function applyFx(s, seat, fx){
     case 'trip': { const n = d(s, 4); log(s, `${nm} 受到 ${n} 點傷害。`); hurt(s, seat, n); break; }
     case 'bite': { const n = Math.max(1, d(s, 6) - gearTotal(s, seat).armor); log(s, `${nm} 受到 ${n} 點傷害。`); hurt(s, seat, n); break; }
     case 'heal': { const h = d(s, 6); const S = s.stats[seat]; S.hp = Math.min(S.maxHp, S.hp + h); log(s, `${nm} 回復了 ${h} 點 HP。`); break; }
-    case 'sanDown': { const n = d(s, 6); loseSan(s, seat, n); log(s, `${nm} 理智 -${n}。`); break; }
+    case 'sanDown': { const n = d(s, RULES.sanDownDie); loseSan(s, seat, n); log(s, `${nm} 理智 -${n}。`); break; }
     case 'chill': {
       const keys = Object.keys(s.map).filter(k => s.map[k].explored && s.map[k].lit && !sealLocked(s, k) && k !== '0,0');
       if (keys.length){ const k = pick(s, keys); s.map[k].lit = false; delete s.fakes[k]; log(s, `「${roomName(s,k)}」暗了下來。`); }
@@ -583,9 +625,11 @@ function explore(s, seat, key){
   }
   const c = s.map[key];
   c.card = card; c.explored = true;
+  // 房間卡用完後翻到的「無名的房間」加上編號，地圖和上鎖選單才分得出是哪一間
+  if (card === 'filler'){ s.fillerN = (s.fillerN || 0) + 1; c.label = `${CARDS.filler.name} ${s.fillerN}`; }
   s.pos[seat] = key;
   const C = CARDS[card];
-  log(s, `${nm} 走進黑暗，擲出 1D20＝${r}${pity ? '（保底）' : ''}，發現了「${C.name}」。`);
+  log(s, `${nm} 走進黑暗，擲出 1D20＝${r}${pity ? '（保底）' : ''}，發現了「${roomName(s, key)}」。`);
   if (kind === 'seal') log(s, `這裡有一座封印裝置。${SEALS.find(x => x.room === card).icon}`, 'seal-break');
   if (kind === 'beast'){
     const beast = BEASTS[C.table];
@@ -599,7 +643,7 @@ function explore(s, seat, key){
       const dmg = Math.max(1, d(s, 6) - gearTotal(s, seat).armor);
       log(s, `一隻${beast}撲了上來！${nm} 擲出 ${rollTxt}，沒能擋住，受到 ${dmg} 點傷害。`);
       hurt(s, seat, dmg);
-      if (d(s, 20) <= 5 && s.priv[seat].candle){
+      if (d(s, 20) <= RULES.beastDropAt && s.priv[seat].candle){
         s.priv[seat].candle = false;
         log(s, `混亂中，${nm} 手上的東西掉進了黑暗裡。`);
         note(s, seat, '你的燭台在和災獸纏鬥時掉了。');
@@ -733,9 +777,10 @@ function resolveStorm(s){
           note(s, id, `你作祟了 ${nameOf(s,a.target)}，對方撐住了。`);
         }
       } else {
-        s.status[a.target].skip = true;
+        s.status[a.target].skip = true; s.status[a.target].skipWhy = '在雷雨中被作祟嚇壞了';
         if (frenzy){ const n = d(s, 6); loseSan(s, a.target, n); note(s, a.target, `狂暴的怪物在你耳邊尖叫，理智 -${n}。`); }
         note(s, id, `你作祟了 ${nameOf(s,a.target)}，對方嚇得下回合不能行動。`);
+        note(s, a.target, '雷雨中有什麼東西貼在你耳邊呼吸。你嚇壞了，下回合不能行動。');
         log(s, `${nameOf(s,a.target)} 在雷雨中被什麼東西嚇壞了。`);
       }
     }
@@ -985,6 +1030,12 @@ function resolveBattle(s){
       const dmg = dn(s, 3, 6);
       b.bossHp -= dmg;
       log(s, `${nm} 找回了原本的力量，一擊命中！3D6＝${dmg} 點傷害。`, 'battle');
+    } else if (a.act === 'potion' && (b.skills[id] || {}).potion > 0){
+      b.skills[id].potion--;
+      const t = a.target && !b.down[a.target] ? a.target : id, st = s.stats[t];
+      const n = Math.min(RULES.potionHeal, st.maxHp - st.hp);
+      st.hp += n;
+      log(s, t === id ? `${nm} 喝下恢復藥水，HP +${n}。` : `${nm} 把恢復藥水餵給 ${nameOf(s, t)}，HP +${n}。`, 'battle');
     } else if (a.act === 'calm'){
       const n = d(s, 10), st = s.stats[id];
       st.san = Math.min(st.maxSan, st.san + n);
@@ -1022,7 +1073,7 @@ function resolveBattle(s){
       log(s, '怪物發出低語，聲音直接鑽進每個人的腦袋。', 'battle');
       targets.forEach(t => {
         const st = s.stats[t], r = d(s, 100), ok = r <= st.san;
-        const loss = ok ? d(s, 3) : d(s, 10);
+        const loss = ok ? d(s, 3) : d(s, RULES.whisperFail);
         st.san = Math.max(0, st.san - loss);
         log(s, `${nameOf(s,t)} 理智檢定 1D100＝${r}（${ok ? '成功' : '失敗'}），理智 -${loss}。`, 'battle');
       });
@@ -1236,7 +1287,7 @@ function reduce(s, a){
       if (!c.lit){
         const r = d(s, 6), ev = darkSearchTable(s)[r - 1];
         evRoll(s, '摸黑搜索', 6, r);
-        log(s, `${nameOf(s,a.seat)} 在「${C.name}」摸黑搜索。擲出 ${DICE[r-1]}：${ev.t}`, 'search');
+        log(s, `${nameOf(s,a.seat)} 在「${roomName(s, k)}」摸黑搜索。擲出 ${DICE[r-1]}：${ev.t}`, 'search');
         applyFx(s, a.seat, ev.fx);
       } else if (C.seal && !s.sealSearched[k]){
         s.sealSearched[k] = true;
@@ -1244,12 +1295,12 @@ function reduce(s, a){
         gainGear(s, a.seat, 'own');
       } else if (c.card === 'candle_store' && (!s.storeUsed || s.mode === 'coop')){
         s.storeUsed = true;   // 燭台儲藏室只有第一次搜得到燭台
-        log(s, `${nameOf(s,a.seat)} 搜索「${C.name}」，架子上還剩下能用的東西。`, 'search');
+        log(s, `${nameOf(s,a.seat)} 搜索「${roomName(s, k)}」，架子上還剩下能用的東西。`, 'search');
         applyFx(s, a.seat, 'candle');
       } else {
         const r = d(s, 6), ev = searchTable(s, C.table)[r - 1];
         evRoll(s, '搜索', 6, r);
-        log(s, `${nameOf(s,a.seat)} 搜索「${C.name}」。擲出 ${DICE[r-1]}：${ev.t}`, 'search');
+        log(s, `${nameOf(s,a.seat)} 搜索「${roomName(s, k)}」。擲出 ${DICE[r-1]}：${ev.t}`, 'search');
         applyFx(s, a.seat, ev.fx);
         lightBonusSearch(s, a.seat, ev.fx);
       }
@@ -1290,7 +1341,7 @@ function reduce(s, a){
         if (m.wounds >= RULES.stunAt){
           m.wounds = 0;
           s.status[a.target].stunned = true;
-          s.status[a.target].skip = true;
+          s.status[a.target].skip = true; s.status[a.target].skipWhy = '被壓制在地上';
           log(s, `${mn} 被壓制在地上，下次雷雨不能作祟，下回合也不能行動。`, 'seal-break');
         }
       } else {
@@ -1359,10 +1410,11 @@ function reduce(s, a){
       if (b.acts[a.seat]) return '這回合你已經行動過了';
       const act = a.act;
       if (b.humans.includes(a.seat)){
-        if (!['attack','guard','fire','calm','match','smash','cover','soothe','ultimate','bind'].includes(act)) return '不支援這個行動';
+        if (!['attack','guard','fire','calm','match','smash','cover','soothe','ultimate','bind','potion'].includes(act)) return '不支援這個行動';
         if (act === 'fire' && !s.priv[a.seat].candle) return '你沒有燭台';
         if (act === 'match' && !(s.status[a.seat].matches > 0)) return '你沒有火柴';
         if (SKILLS[act] && !((b.skills[a.seat] || {})[act] > 0)) return '這個技能沒有次數了';
+        if (act === 'potion' && a.target && (!b.humans.includes(a.target) || b.down[a.target])) return '只能給自己或還站著的隊友';
         if (act === 'guard' && (!a.target || a.target === a.seat || !b.humans.includes(a.target) || b.down[a.target])) return '請選一位還站著的隊友';
       } else if (a.seat === b.controller){
         if (!['bite','sweep','whisper'].includes(act)) return '不支援這個行動';
@@ -1382,6 +1434,8 @@ function reduce(s, a){
       // 任何人都能送，但只有伺服器時間真的過了期限才會生效
       if (!seated) return '找不到這個座位';
       if (a.type === 'timeout' && (!s.deadline || s.now < s.deadline)) return '還沒到時間';
+      // 房主按下推進時看到的是哪一段（誰的回合、哪個階段）。按確認的這幾秒內如果已經換人了，就不要誤跳過下一位
+      if (a.type === 'force' && a.expect && a.expect !== stepKey(s)) return '畫面已經換到下一位了，這次推進取消。需要的話請再按一次';
       if (a.type === 'force' && s.phase !== 'day') log(s, '房主決定不再等待，直接進行下去。');
       if (s.phase === 'reveal'){ s.seats.forEach(p => { s.ready[p.id] = true; }); startRound(s); return null; }
       if (s.phase === 'day'){ log(s, a.type === 'force' ? `房主跳過了 ${nameOf(s, cur(s))} 的回合。` : `${nameOf(s, cur(s))} 的時間到了。`); endTurn(s); return null; }
@@ -1422,6 +1476,7 @@ function viewFor(s, viewer){
   v.deckCount = s.deck.length;
   v.stormSubmitted = Object.keys(s.stormActs || {});
   v.recovery = recovery(s);
+  v.bossDealt = Object.values(s.monster || {}).reduce((t, m) => t + (m.dealt || 0), 0);   // 屋內打在怪物身上的傷害（攻擊本來就公開）
   if (v.battle){ v.battleSubmitted = Object.keys(s.battle.acts || {}); delete v.battle.acts; }
   const open = s.phase === 'battle' || s.phase === 'over';
   v.revealed = {};
@@ -1468,7 +1523,7 @@ function toPlurkChunks(lines, title, limit = RULES.plurkLimit){
 const LampEngine = {
   RULES, SPEEDS, DIRS, CARDS, SEALS, GEAR, ROLE_INFO, ROLE_CARDS, SKILLS,
   createGame, applyAction, viewFor, remapSeats, ENDINGS, RECOVERY_TEXT,
-  adj, isAdj, step, cur, nameOf, roomName, sealStatus, litCount, darkRoomCount, gearTotal, recovery, snuffTargets,
+  adj, isAdj, step, cur, stepKey, nameOf, roomName, sealStatus, litCount, darkRoomCount, gearTotal, recovery, snuffTargets,
   toPlurkChunks,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = LampEngine;

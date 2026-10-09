@@ -72,7 +72,7 @@ exports.onIntent = onValueCreated({ ref: '/rooms/{code}/intents/{id}', region: R
 // 只留引擎需要的欄位；seat 一律由伺服器填成發送者本人
 function sanitize(a) {
   const out = { type: String(a.type) };
-  for (const k of ['to', 'target', 'kind', 'act', 'then']) {
+  for (const k of ['to', 'target', 'kind', 'act', 'then', 'expect']) {
     if (typeof a[k] === 'string') out[k] = a[k].slice(0, 64);
   }
   return out;
